@@ -1,30 +1,28 @@
 const express = require('express');
 const { Pool } = require('pg');
+const cors = require('cors');
 require('dotenv').config();
 
 const app = express();
 const port = 3001;
 
-// --- Manual CORS Middleware ---
-app.use((req, res, next) => {
-  const allowedOrigins = ['https://www.akemi.store', 'https://akemi.store', 'http://localhost:5173'];
-  const origin = req.headers.origin;
-
-  if (allowedOrigins.includes(origin)) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-  }
-
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, PATCH, DELETE');
-  res.setHeader('Access-Control-Allow-Headers', 'X-Requested-With,content-type,Authorization');
-  res.setHeader('Access-Control-Allow-Credentials', true);
-
-  // Intercept pre-flight OPTIONS requests
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(204);
-  }
-
-  next();
-});
+// --- CORS Middleware ---
+const allowedOrigins = ['https://www.akemi.store', 'https://akemi.store', 'http://localhost:5173'];
+const corsOptions = {
+  origin: (origin, callback) => {
+    // allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) === -1) {
+      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  },
+  credentials: true,
+  methods: 'GET, POST, OPTIONS, PUT, PATCH, DELETE',
+  allowedHeaders: 'X-Requested-With,content-type,Authorization'
+};
+app.use(cors(corsOptions));
 
 // --- Middlewares ---
 app.use(express.json());
@@ -88,6 +86,4 @@ app.post('/register', async (req, res) => {
   }
 });
 
-app.listen(port, () => {
-  console.log(`Servidor rodando em http://localhost:${port}`);
-}); 
+module.exports = app; 
