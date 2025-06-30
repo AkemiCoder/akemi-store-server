@@ -30,10 +30,7 @@ app.use(express.json());
 
 // Initialize database pool
 const pool = new Pool({
-  connectionString: process.env.POSTGRES_URL,
-  ssl: {
-    rejectUnauthorized: false
-  }
+  connectionString: `${process.env.POSTGRES_URL}?sslmode=require`,
 });
 
 // Function to create users table
