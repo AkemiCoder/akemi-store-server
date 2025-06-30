@@ -3,6 +3,10 @@ const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 require('dotenv').config();
 
+if (!process.env.POSTGRES_URL) {
+  throw new Error('FATAL: A variável de ambiente POSTGRES_URL não foi encontrada no ambiente da Vercel!');
+}
+
 const app = express();
 const port = 3001;
 
