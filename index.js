@@ -2,6 +2,8 @@ const express = require('express');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+const { Resend } = require('resend');
 
 if (!process.env.POSTGRES_URL || process.env.POSTGRES_URL.trim() === '') {
   throw new Error('FATAL: A variável de ambiente POSTGRES_URL está VAZIA ou não foi encontrada no ambiente da Vercel!');
@@ -9,9 +11,16 @@ if (!process.env.POSTGRES_URL || process.env.POSTGRES_URL.trim() === '') {
 if (!process.env.JWT_SECRET) {
   throw new Error('FATAL: A variável de ambiente JWT_SECRET não foi encontrada no ambiente da Vercel!');
 }
+if (!process.env.RESEND_API_KEY) {
+  throw new Error('FATAL: A variável de ambiente RESEND_API_KEY não foi encontrada!');
+}
+if (!process.env.BASE_URL) {
+    throw new Error('FATAL: A variável de ambiente BASE_URL não foi encontrada!');
+}
 
 const app = express();
 const port = 3001;
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 // --- Middlewares ---
 app.use(express.json());
@@ -24,32 +33,79 @@ const pool = new Pool({
   connectionString: `${process.env.POSTGRES_URL}?sslmode=require`,
 });
 
-// Function to create users table
+// Migração e criação da tabela
 const createTable = async () => {
-  const createTableQuery = `
-    CREATE TABLE IF NOT EXISTS users (
-      id SERIAL PRIMARY KEY,
-      name TEXT,
-      email TEXT UNIQUE NOT NULL,
-      password TEXT NOT NULL,
-      createdAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-    )
-  `;
-  const addNameColumnQuery = `ALTER TABLE users ADD COLUMN IF NOT EXISTS name TEXT;`;
-
+  const client = await pool.connect();
   try {
-    const client = await pool.connect();
+    await client.query('BEGIN'); // Inicia uma transação
+
+    // 1. Cria a tabela se ela não existir
+    const createTableQuery = `
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        email TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
+        createdAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      )
+    `;
     await client.query(createTableQuery);
-    await client.query(addNameColumnQuery); // Safely add column if it doesn't exist
-    client.release();
+
+    // 2. Verifica as colunas existentes
+    const getColumnsQuery = `
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name   = 'users';
+    `;
+    const res = await client.query(getColumnsQuery);
+    const existingColumns = res.rows.map(row => row.column_name);
+
+    // 3. Define as colunas que devem existir
+    const requiredColumns = [
+      { name: 'name', type: 'TEXT' },
+      { name: 'is_email_verified', type: 'BOOLEAN DEFAULT FALSE' },
+      { name: 'email_verification_token', type: 'TEXT' },
+      { name: 'password_reset_token', type: 'TEXT' },
+      { name: 'password_reset_expires', type: 'TIMESTAMPTZ' }
+    ];
+
+    // 4. Adiciona apenas as colunas que não existem
+    for (const col of requiredColumns) {
+      if (!existingColumns.includes(col.name)) {
+        console.log(`Adicionando coluna faltante: ${col.name}`);
+        await client.query(`ALTER TABLE users ADD COLUMN ${col.name} ${col.type}`);
+      }
+    }
+
+    await client.query('COMMIT'); // Finaliza a transação com sucesso
     console.log('Tabela "users" verificada e migrada com sucesso.');
   } catch (error) {
+    await client.query('ROLLBACK'); // Desfaz a transação em caso de erro
     console.error('Erro ao conectar ou criar/migrar a tabela:', error);
+    throw error; // Propaga o erro para que a aplicação não inicie com o DB inconsistente
+  } finally {
+    client.release(); // Libera o cliente de volta para o pool
   }
 };
 
 // Call function to ensure table exists
 createTable();
+
+// Função para enviar e-mail de verificação
+const sendVerificationEmail = async (email, token) => {
+    const verificationUrl = `${process.env.BASE_URL}/verify-email?token=${token}`;
+    try {
+        await resend.emails.send({
+            from: 'AkemiSoft <onboarding@resend.dev>',
+            to: email,
+            subject: 'Verifique seu e-mail na AkemiSoft',
+            html: `<h1>Bem-vindo à AkemiSoft!</h1><p>Clique no link abaixo para verificar seu e-mail:</p><a href="${verificationUrl}">${verificationUrl}</a>`
+        });
+        console.log(`E-mail de verificação enviado para ${email}`);
+    } catch (error) {
+        console.error("Erro ao enviar e-mail de verificação:", error);
+    }
+};
 
 // Registration endpoint
 app.post('/api/register', async (req, res) => {
@@ -65,12 +121,14 @@ app.post('/api/register', async (req, res) => {
 
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
-    const insertQuery = 'INSERT INTO users (name, email, password) VALUES ($1, $2, $3) RETURNING id';
+    const verificationToken = crypto.randomBytes(32).toString('hex');
     
-    const result = await pool.query(insertQuery, [name, email, hashedPassword]); 
+    const insertQuery = 'INSERT INTO users (name, email, password, email_verification_token) VALUES ($1, $2, $3, $4) RETURNING id';
+    const result = await pool.query(insertQuery, [name, email, hashedPassword, verificationToken]); 
     
-    console.log(`Novo usuário registrado: ${email}, ID: ${result.rows[0].id}`);
-    res.status(201).json({ message: 'Usuário registrado com sucesso!', userId: result.rows[0].id });
+    await sendVerificationEmail(email, verificationToken);
+
+    res.status(201).json({ message: 'Usuário registrado com sucesso! Por favor, verifique seu e-mail.'});
 
   } catch (error) {
     if (error.code === '23505') { // Unique violation
@@ -238,6 +296,88 @@ app.patch('/api/user/password', authenticateToken, async (req, res) => {
     console.error('Erro ao alterar senha:', error);
     res.status(500).json({ message: 'Ocorreu um erro no servidor ao alterar a senha.' });
   }
+});
+
+// Rota para verificar e-mail
+app.post('/api/auth/verify-email', async (req, res) => {
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ message: 'Token é obrigatório.' });
+
+    try {
+        const findUserQuery = 'SELECT id FROM users WHERE email_verification_token = $1';
+        const userResult = await pool.query(findUserQuery, [token]);
+
+        if (userResult.rows.length === 0) {
+            return res.status(400).json({ message: 'Token inválido ou expirado.' });
+        }
+
+        const userId = userResult.rows[0].id;
+        const updateUserQuery = 'UPDATE users SET is_email_verified = TRUE, email_verification_token = NULL WHERE id = $1';
+        await pool.query(updateUserQuery, [userId]);
+
+        res.status(200).json({ message: 'E-mail verificado com sucesso!' });
+    } catch (error) {
+        console.error('Erro ao verificar e-mail:', error);
+        res.status(500).json({ message: 'Ocorreu um erro no servidor.' });
+    }
+});
+
+// Rota de "Esqueci minha senha"
+app.post('/api/auth/forgot-password', async (req, res) => {
+    const { email } = req.body;
+    try {
+        const userResult = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+        if (userResult.rows.length === 0) {
+            // Não revele se o usuário existe ou não
+            return res.status(200).json({ message: 'Se um usuário com este e-mail existir, um link de redefinição será enviado.' });
+        }
+
+        const resetToken = crypto.randomBytes(32).toString('hex');
+        const resetExpires = new Date(Date.now() + 3600000); // Expira em 1 hora
+
+        await pool.query('UPDATE users SET password_reset_token = $1, password_reset_expires = $2 WHERE email = $3', [resetToken, resetExpires, email]);
+
+        const resetUrl = `${process.env.BASE_URL}/reset-password?token=${resetToken}`;
+        await resend.emails.send({
+            from: 'AkemiSoft <onboarding@resend.dev>',
+            to: email,
+            subject: 'Redefinição de Senha - AkemiSoft',
+            html: `<p>Você solicitou uma redefinição de senha. Clique no link para continuar:</p><a href="${resetUrl}">${resetUrl}</a>`
+        });
+
+        res.status(200).json({ message: 'Se um usuário com este e-mail existir, um link de redefinição será enviado.' });
+    } catch (error) {
+        console.error('Erro no forgot-password:', error);
+        res.status(500).json({ message: 'Ocorreu um erro no servidor.' });
+    }
+});
+
+// Rota para redefinir a senha
+app.post('/api/auth/reset-password', async (req, res) => {
+    const { token, newPassword } = req.body;
+    if (!token || !newPassword) {
+        return res.status(400).json({ message: 'Token e nova senha são obrigatórios.' });
+    }
+
+    try {
+        const findUserQuery = 'SELECT * FROM users WHERE password_reset_token = $1 AND password_reset_expires > NOW()';
+        const userResult = await pool.query(findUserQuery, [token]);
+        
+        if (userResult.rows.length === 0) {
+            return res.status(400).json({ message: 'Token inválido ou expirado.' });
+        }
+
+        const user = userResult.rows[0];
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+        const updateUserQuery = 'UPDATE users SET password = $1, password_reset_token = NULL, password_reset_expires = NULL WHERE id = $2';
+        await pool.query(updateUserQuery, [hashedPassword, user.id]);
+
+        res.status(200).json({ message: 'Senha redefinida com sucesso!' });
+    } catch (error) {
+        console.error('Erro no reset-password:', error);
+        res.status(500).json({ message: 'Ocorreu um erro no servidor.' });
+    }
 });
 
 module.exports = app; 
