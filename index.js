@@ -1,29 +1,32 @@
 require('dotenv').config();
 const express = require('express');
-const cors = require('cors');
 const { Pool } = require('pg');
 
 const app = express();
 const port = 3001;
 
-// --- CORS Configuration ---
-const whitelist = ['http://localhost:5173', 'https://www.akemi.store', 'https://akemi.store'];
-const corsOptions = {
-  origin: function (origin, callback) {
-    if (whitelist.indexOf(origin) !== -1 || !origin) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
-  methods: 'GET,POST,OPTIONS',
-  allowedHeaders: 'Content-Type,Authorization',
-};
+// --- Manual CORS Middleware ---
+app.use((req, res, next) => {
+  const allowedOrigins = ['https://www.akemi.store', 'https://akemi.store'];
+  const origin = req.headers.origin;
+
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  }
+
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, PATCH, DELETE');
+  res.setHeader('Access-Control-Allow-Headers', 'X-Requested-With,content-type,Authorization');
+  res.setHeader('Access-Control-Allow-Credentials', true);
+
+  // Intercept pre-flight OPTIONS requests
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+
+  next();
+});
 
 // --- Middlewares ---
-app.use(cors(corsOptions)); // Use CORS with detailed options
-app.options('*', cors(corsOptions)); // Enable pre-flight for all routes
 app.use(express.json());
 
 // Initialize database pool
