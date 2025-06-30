@@ -9,6 +9,9 @@ const port = 3001;
 // --- Middlewares ---
 app.use(express.json());
 
+// Adicionado para depuração
+console.log('Verificando POSTGRES_URL:', process.env.POSTGRES_URL ? 'Definida' : 'NÃO DEFINIDA');
+
 // Initialize database pool
 const pool = new Pool({
   connectionString: `${process.env.POSTGRES_URL}?sslmode=require`,
