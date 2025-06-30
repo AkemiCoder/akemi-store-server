@@ -35,13 +35,16 @@ const createTable = async () => {
       createdAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
     )
   `;
+  const addNameColumnQuery = `ALTER TABLE users ADD COLUMN IF NOT EXISTS name TEXT;`;
+
   try {
     const client = await pool.connect();
     await client.query(createTableQuery);
+    await client.query(addNameColumnQuery); // Safely add column if it doesn't exist
     client.release();
-    console.log('Tabela "users" verificada/criada com sucesso.');
+    console.log('Tabela "users" verificada e migrada com sucesso.');
   } catch (error) {
-    console.error('Erro ao conectar ou criar a tabela:', error);
+    console.error('Erro ao conectar ou criar/migrar a tabela:', error);
   }
 };
 
