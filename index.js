@@ -1,6 +1,7 @@
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
+const bcrypt = require('bcryptjs');
 require('dotenv').config();
 
 const app = express();
@@ -46,10 +47,12 @@ const createTable = async () => {
     )
   `;
   try {
-    await pool.query(createTableQuery);
+    const client = await pool.connect();
+    await client.query(createTableQuery);
+    client.release();
     console.log('Tabela "users" verificada/criada com sucesso.');
   } catch (error) {
-    console.error('Erro ao criar a tabela:', error);
+    console.error('Erro ao conectar ou criar a tabela:', error);
   }
 };
 
@@ -68,11 +71,11 @@ app.post('/api/register', async (req, res) => {
     return res.status(400).json({ message: 'A senha deve ter pelo menos 8 caracteres.' });
   }
 
-  const insertQuery = 'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id';
-  
   try {
-    // Note: Storing plain text password for simplicity. In production, ALWAYS hash passwords.
-    const result = await pool.query(insertQuery, [email, password]); 
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const insertQuery = 'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id';
+    
+    const result = await pool.query(insertQuery, [email, hashedPassword]); 
     
     console.log(`Novo usuário registrado: ${email}, ID: ${result.rows[0].id}`);
     res.status(201).json({ message: 'Usuário registrado com sucesso!', userId: result.rows[0].id });
@@ -81,8 +84,40 @@ app.post('/api/register', async (req, res) => {
     if (error.code === '23505') { // Unique violation
       return res.status(409).json({ message: 'Este e-mail já está em uso.' });
     }
-    console.error('Erro ao registrar usuário:', error);
-    res.status(500).json({ message: 'Ocorreu um erro no servidor.' });
+    console.error('Erro detalhado ao registrar usuário:', error);
+    res.status(500).json({ message: 'Ocorreu um erro no servidor ao tentar registrar.', error: error.message });
+  }
+});
+
+// Login endpoint
+app.post('/api/login', async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ message: 'Email e senha são obrigatórios.' });
+  }
+
+  try {
+    const findUserQuery = 'SELECT * FROM users WHERE email = $1';
+    const result = await pool.query(findUserQuery, [email]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Usuário não encontrado.' });
+    }
+
+    const user = result.rows[0];
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+
+    if (!isPasswordValid) {
+      return res.status(401).json({ message: 'Senha inválida.' });
+    }
+    
+    // Login bem-sucedido (em um app real, você geraria um token JWT aqui)
+    res.status(200).json({ message: 'Login bem-sucedido!', userId: user.id });
+
+  } catch (error) {
+    console.error('Erro detalhado ao fazer login:', error);
+    res.status(500).json({ message: 'Ocorreu um erro no servidor ao tentar fazer login.', error: error.message });
   }
 });
 
