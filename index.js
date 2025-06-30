@@ -1,10 +1,13 @@
 const express = require('express');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
-require('dotenv').config();
+const jwt = require('jsonwebtoken');
 
-if (!process.env.POSTGRES_URL) {
-  throw new Error('FATAL: A variável de ambiente POSTGRES_URL não foi encontrada no ambiente da Vercel!');
+if (!process.env.POSTGRES_URL || process.env.POSTGRES_URL.trim() === '') {
+  throw new Error('FATAL: A variável de ambiente POSTGRES_URL está VAZIA ou não foi encontrada no ambiente da Vercel!');
+}
+if (!process.env.JWT_SECRET) {
+  throw new Error('FATAL: A variável de ambiente JWT_SECRET não foi encontrada no ambiente da Vercel!');
 }
 
 const app = express();
@@ -97,12 +100,53 @@ app.post('/api/login', async (req, res) => {
       return res.status(401).json({ message: 'Senha inválida.' });
     }
     
-    // Login bem-sucedido (em um app real, você geraria um token JWT aqui)
-    res.status(200).json({ message: 'Login bem-sucedido!', userId: user.id });
+    // Login bem-sucedido, gerar token JWT
+    const token = jwt.sign(
+      { userId: user.id, email: user.email },
+      process.env.JWT_SECRET,
+      { expiresIn: '1d' } // Token expira em 1 dia
+    );
+
+    res.status(200).json({ message: 'Login bem-sucedido!', token });
 
   } catch (error) {
     console.error('Erro detalhado ao fazer login:', error);
     res.status(500).json({ message: 'Ocorreu um erro no servidor ao tentar fazer login.', error: error.message });
+  }
+});
+
+// Middleware para verificar token
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1]; // Formato "Bearer TOKEN"
+
+  if (token == null) {
+    return res.sendStatus(401); // Não autorizado se não houver token
+  }
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.sendStatus(403); // Proibido se o token for inválido
+    }
+    req.user = user;
+    next();
+  });
+};
+
+// Rota para buscar dados do usuário
+app.get('/api/user', authenticateToken, async (req, res) => {
+  try {
+    const findUserQuery = 'SELECT id, email FROM users WHERE id = $1';
+    const result = await pool.query(findUserQuery, [req.user.userId]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Usuário não encontrado.' });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Erro ao buscar dados do usuário:', error);
+    res.status(500).json({ message: 'Ocorreu um erro no servidor.' });
   }
 });
 
