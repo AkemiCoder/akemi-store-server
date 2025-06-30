@@ -6,8 +6,24 @@ const { Pool } = require('pg');
 const app = express();
 const port = 3001;
 
+// --- CORS Configuration ---
+const whitelist = ['http://localhost:5173', 'https://www.akemi.store', 'https://akemi.store'];
+const corsOptions = {
+  origin: function (origin, callback) {
+    if (whitelist.indexOf(origin) !== -1 || !origin) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: 'GET,POST,OPTIONS',
+  allowedHeaders: 'Content-Type,Authorization',
+};
+
 // --- Middlewares ---
-app.use(cors()); // Simplified CORS
+app.use(cors(corsOptions)); // Use CORS with detailed options
+app.options('*', cors(corsOptions)); // Enable pre-flight for all routes
 app.use(express.json());
 
 // Initialize database pool
