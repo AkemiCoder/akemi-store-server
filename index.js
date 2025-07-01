@@ -474,9 +474,20 @@ app.post('/api/auth/resend-verification', authenticateToken, async (req, res) =>
 });
 
 // Rota para autenticar usuários no canal de presença do Pusher
-app.post('/api/pusher/auth', express.urlencoded({ extended: true }), authenticateToken, (req, res) => {
+app.post('/api/pusher/auth', authenticateToken, (req, res) => {
+  // --- DEBUGGING ---
+  console.log('--- PUSHER AUTH REQUEST ---');
+  console.log('HEADERS:', JSON.stringify(req.headers));
+  console.log('BODY:', JSON.stringify(req.body));
+  // --- FIM DEBUGGING ---
+
   const socketId = req.body.socket_id;
   const channel = req.body.channel_name;
+
+  if (!socketId || !channel) {
+    console.error('Pusher auth FALHOU: socket_id ou channel_name ausentes no corpo da requisição.');
+    return res.status(400).send('Requisição inválida: socket_id e channel_name são obrigatórios.');
+  }
   
   // Informações do usuário que vêm do nosso token JWT
   const user = req.user;
@@ -493,10 +504,11 @@ app.post('/api/pusher/auth', express.urlencoded({ extended: true }), authenticat
 
   try {
     const authResponse = pusher.authorizeChannel(socketId, channel, userData);
+    console.log(`Pusher auth SUCESSO para usuário: ${user.userId}`);
     res.send(authResponse);
   } catch (error) {
-    console.error('Pusher auth error:', error);
-    res.status(500).send('Pusher auth error');
+    console.error('Pusher auth ERRO na chamada authorizeChannel:', error);
+    res.status(500).send('Erro na autorização do Pusher');
   }
 });
 
