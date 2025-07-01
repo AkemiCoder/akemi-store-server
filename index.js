@@ -1,4 +1,4 @@
-// Vercel Cache Breaker: 1
+// Vercel Cache Breaker: final-attempt-3
 const express = require('express');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
@@ -485,7 +485,7 @@ app.post('/api/pusher/auth', authenticateToken, (req, res) => {
   
   const user = req.user;
   const userData = {
-    id: user.userId.toString(),
+    user_id: user.userId.toString(),
     user_info: {
       name: user.name,
       email: user.email,
