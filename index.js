@@ -474,7 +474,7 @@ app.post('/api/auth/resend-verification', authenticateToken, async (req, res) =>
 });
 
 // Rota para autenticar usuários no canal de presença do Pusher
-app.post('/api/pusher/auth', authenticateToken, (req, res) => {
+app.post('/api/pusher/auth', express.urlencoded({ extended: true }), authenticateToken, (req, res) => {
   const socketId = req.body.socket_id;
   const channel = req.body.channel_name;
   
