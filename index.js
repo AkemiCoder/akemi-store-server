@@ -91,6 +91,9 @@ const runMigration = async () => {
       await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT \'user\'');
       await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS "createdAt" TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP');
       
+      // Garante que a conta principal seja sempre admin
+      await client.query(`UPDATE users SET role = 'admin' WHERE email = 'hunteqy@gmail.com'`);
+
       await client.query('COMMIT');
       console.log('Banco de dados verificado e migrado com sucesso (método robusto).');
       resolve();
@@ -525,6 +528,48 @@ app.get('/api/user-profile/:id', authenticateToken, async (req, res) => {
     res.json(result.rows[0]);
   } catch (error) {
     console.error(`Erro ao buscar perfil do usuário ${id}:`, error);
+    res.status(500).json({ message: 'Ocorreu um erro no servidor.' });
+  }
+});
+
+// Middleware para verificar se o usuário é admin
+const isAdmin = (req, res, next) => {
+  if (req.user && req.user.role === 'admin') {
+    next();
+  } else {
+    res.status(403).json({ message: 'Acesso negado. Apenas administradores podem executar esta ação.' });
+  }
+};
+
+// Rota para buscar todos os usuários (para a lista da comunidade)
+app.get('/api/users/all', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT id, name, avatar_url, role FROM users ORDER BY name ASC');
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Erro ao buscar todos os usuários:', error);
+    res.status(500).json({ message: 'Ocorreu um erro no servidor.' });
+  }
+});
+
+// Rota para atualizar o cargo de um usuário (apenas para admins)
+app.patch('/api/users/:id/role', authenticateToken, isAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { role } = req.body;
+
+  const validRoles = ['user', 'gamer', 'premium', 'moderator', 'admin', 'dev', 'youtuber', 'famous'];
+  if (!validRoles.includes(role)) {
+    return res.status(400).json({ message: 'Cargo inválido.' });
+  }
+
+  try {
+    const result = await pool.query('UPDATE users SET role = $1 WHERE id = $2 RETURNING id, role', [role, id]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Usuário não encontrado.' });
+    }
+    res.status(200).json({ message: 'Cargo atualizado com sucesso!', user: result.rows[0] });
+  } catch (error) {
+    console.error(`Erro ao atualizar cargo para o usuário ${id}:`, error);
     res.status(500).json({ message: 'Ocorreu um erro no servidor.' });
   }
 });
