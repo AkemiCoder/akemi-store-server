@@ -57,69 +57,84 @@ const pool = new Pool({
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
+let migrationPromise = null;
+
 // Migração e criação da tabela
-const createTable = async () => {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN'); // Inicia uma transação
+const runMigration = async () => {
+  // Se a migração já foi concluída com sucesso, não faz nada.
+  if (migrationPromise) return migrationPromise;
 
-    // 1. Cria a tabela se ela não existir
-  const createTableQuery = `
-    CREATE TABLE IF NOT EXISTS users (
-      id SERIAL PRIMARY KEY,
-      email TEXT UNIQUE NOT NULL,
-      password TEXT NOT NULL,
-      avatar_url TEXT,
-      "createdAt" TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-    )
-  `;
-    await client.query(createTableQuery);
+  migrationPromise = new Promise(async (resolve, reject) => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN'); // Inicia uma transação
 
-    // 2. Verifica as colunas existentes
-    const getColumnsQuery = `
-      SELECT column_name
-      FROM information_schema.columns
-      WHERE table_schema = 'public'
-        AND table_name   = 'users';
-    `;
-    const res = await client.query(getColumnsQuery);
-    const existingColumns = res.rows.map(row => row.column_name);
+      const createTableQuery = `
+        CREATE TABLE IF NOT EXISTS users (
+          id SERIAL PRIMARY KEY,
+          email TEXT UNIQUE NOT NULL,
+          password TEXT NOT NULL,
+          avatar_url TEXT,
+          "createdAt" TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+        )
+      `;
+      await client.query(createTableQuery);
 
-    // 3. Define as colunas que devem existir
-    const requiredColumns = [
-      { name: 'name', type: 'TEXT' },
-      { name: 'avatar_url', type: 'TEXT' },
-      { name: 'is_owner', type: 'BOOLEAN DEFAULT FALSE' },
-      { name: 'is_email_verified', type: 'BOOLEAN DEFAULT FALSE' },
-      { name: 'email_verification_token', type: 'TEXT' },
-      { name: 'password_reset_token', type: 'TEXT' },
-      { name: 'password_reset_expires', type: 'TIMESTAMPTZ' },
-      { name: 'bio', type: 'TEXT' },
-      { name: 'role', type: 'TEXT NOT NULL DEFAULT \'user\'' },
-      { name: 'createdAt', type: 'TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP' }
-    ];
+      const getColumnsQuery = `
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'users';
+      `;
+      const res = await client.query(getColumnsQuery);
+      const existingColumns = res.rows.map(row => row.column_name);
 
-    // 4. Adiciona apenas as colunas que não existem
-    for (const col of requiredColumns) {
-      if (!existingColumns.includes(col.name)) {
-        console.log(`Adicionando coluna faltante: ${col.name}`);
-        await client.query(`ALTER TABLE users ADD COLUMN ${col.name} ${col.type}`);
+      const requiredColumns = [
+        { name: 'name', type: 'TEXT' },
+        { name: 'avatar_url', type: 'TEXT' },
+        { name: 'is_owner', type: 'BOOLEAN DEFAULT FALSE' },
+        { name: 'is_email_verified', type: 'BOOLEAN DEFAULT FALSE' },
+        { name: 'email_verification_token', type: 'TEXT' },
+        { name: 'password_reset_token', type: 'TEXT' },
+        { name: 'password_reset_expires', type: 'TIMESTAMPTZ' },
+        { name: 'bio', type: 'TEXT' },
+        { name: 'role', type: 'TEXT NOT NULL DEFAULT \'user\'' },
+        { name: 'createdAt', type: 'TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP' }
+      ];
+
+      for (const col of requiredColumns) {
+        if (!existingColumns.includes(col.name)) {
+          console.log(`Adicionando coluna faltante: ${col.name}`);
+          await client.query(`ALTER TABLE users ADD COLUMN ${col.name} ${col.type}`);
+        }
       }
-    }
 
-    await client.query('COMMIT'); // Finaliza a transação com sucesso
-    console.log('Tabela "users" verificada e migrada com sucesso.');
+      await client.query('COMMIT');
+      console.log('Tabela "users" verificada e migrada com sucesso.');
+      resolve();
+    } catch (error) {
+      await client.query('ROLLBACK');
+      console.error('Erro ao conectar ou criar/migrar a tabela:', error);
+      reject(error);
+    } finally {
+      client.release();
+    }
+  });
+  return migrationPromise;
+};
+
+// Middleware para garantir que a migração foi concluída
+const ensureDbIsReady = async (req, res, next) => {
+  try {
+    await runMigration();
+    next();
   } catch (error) {
-    await client.query('ROLLBACK'); // Desfaz a transação em caso de erro
-    console.error('Erro ao conectar ou criar/migrar a tabela:', error);
-    throw error; // Propaga o erro para que a aplicação não inicie com o DB inconsistente
-  } finally {
-    client.release(); // Libera o cliente de volta para o pool
+    console.error('CRÍTICO: Migração do banco de dados falhou. A aplicação não pode continuar.');
+    res.status(503).json({ message: 'O servidor não está pronto para receber requisições. Tente novamente mais tarde.' });
   }
 };
 
-// Call function to ensure table exists
-createTable();
+// Aplica o middleware a todas as rotas
+app.use(ensureDbIsReady);
 
 // Função para enviar e-mail de verificação
 const sendVerificationEmail = async (email, token) => {
