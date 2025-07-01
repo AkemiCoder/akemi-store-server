@@ -86,7 +86,7 @@ const runMigration = async () => {
         WHERE table_schema = 'public' AND table_name = 'users';
       `;
       const res = await client.query(getColumnsQuery);
-      const existingColumns = res.rows.map(row => row.column_name);
+      const existingColumns = res.rows.map(row => row.column_name.toLowerCase());
 
       const requiredColumns = [
         { name: 'name', type: 'TEXT' },
@@ -102,9 +102,9 @@ const runMigration = async () => {
       ];
 
       for (const col of requiredColumns) {
-        if (!existingColumns.includes(col.name)) {
+        if (!existingColumns.includes(col.name.toLowerCase())) {
           console.log(`Adicionando coluna faltante: ${col.name}`);
-          await client.query(`ALTER TABLE users ADD COLUMN ${col.name} ${col.type}`);
+          await client.query(`ALTER TABLE users ADD COLUMN "${col.name}" ${col.type}`);
         }
       }
 
