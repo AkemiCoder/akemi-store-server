@@ -495,16 +495,8 @@ app.post('/api/pusher/auth', authenticateToken, (req, res) => {
     res.send(authResponse);
   } catch (error) {
     console.error('Pusher auth error:', error);
-    res.status(500).send('Pusher authentication failed');
+    res.status(500).send('Pusher auth error');
   }
-});
-
-// Rota para expor a configuração pública do Pusher
-app.get('/api/pusher/config', authenticateToken, (req, res) => {
-  res.json({
-    key: process.env.PUSHER_KEY,
-    cluster: process.env.PUSHER_CLUSTER
-  });
 });
 
 module.exports = app; 
