@@ -64,15 +64,15 @@ const createTable = async () => {
     await client.query('BEGIN'); // Inicia uma transação
 
     // 1. Cria a tabela se ela não existir
-    const createTableQuery = `
-      CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        email TEXT UNIQUE NOT NULL,
-        password TEXT NOT NULL,
+  const createTableQuery = `
+    CREATE TABLE IF NOT EXISTS users (
+      id SERIAL PRIMARY KEY,
+      email TEXT UNIQUE NOT NULL,
+      password TEXT NOT NULL,
         avatar_url TEXT,
-        createdAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-      )
-    `;
+      createdAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    )
+  `;
     await client.query(createTableQuery);
 
     // 2. Verifica as colunas existentes
