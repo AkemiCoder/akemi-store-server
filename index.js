@@ -486,7 +486,8 @@ app.post('/api/pusher/auth', express.urlencoded({ extended: true }), authenticat
       name: user.name,
       email: user.email,
       avatar_url: user.avatar_url,
-      is_owner: user.is_owner
+      // Garante que is_owner seja booleano, mesmo que não venha no token
+      is_owner: !!user.is_owner
     }
   };
 
