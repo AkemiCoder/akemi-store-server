@@ -41,6 +41,7 @@ const pusher = new Pusher({
 });
 
 // --- Middlewares ---
+// Estes devem vir ANTES da definição das rotas
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
