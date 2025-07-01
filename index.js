@@ -74,6 +74,7 @@ const createTable = async () => {
     const requiredColumns = [
       { name: 'name', type: 'TEXT' },
       { name: 'avatar_url', type: 'TEXT' },
+      { name: 'is_owner', type: 'BOOLEAN DEFAULT FALSE' },
       { name: 'is_email_verified', type: 'BOOLEAN DEFAULT FALSE' },
       { name: 'email_verification_token', type: 'TEXT' },
       { name: 'password_reset_token', type: 'TEXT' },
