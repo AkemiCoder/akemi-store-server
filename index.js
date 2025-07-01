@@ -126,14 +126,14 @@ const sendVerificationEmail = async (email, token) => {
     const verificationUrl = `${process.env.BASE_URL}/verify-email?token=${token}`;
     try {
         await resend.emails.send({
-            from: 'AkemiSoft <onboarding@resend.dev>',
+            from: 'AkemiSoft <noreply@akemi.store>',
             to: email,
             subject: 'Verifique seu e-mail na AkemiSoft',
             html: `<h1>Bem-vindo à AkemiSoft!</h1><p>Clique no link abaixo para verificar seu e-mail:</p><a href="${verificationUrl}">${verificationUrl}</a>`
         });
         console.log(`E-mail de verificação enviado para ${email}`);
     } catch (error) {
-        console.error("Erro ao enviar e-mail de verificação:", error);
+        console.error("Erro detalhado ao enviar e-mail de verificação:", JSON.stringify(error, null, 2));
     }
 };
 
@@ -375,7 +375,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
         const resetUrl = `${process.env.BASE_URL}/reset-password?token=${resetToken}`;
         await resend.emails.send({
-            from: 'AkemiSoft <onboarding@resend.dev>',
+            from: 'AkemiSoft <noreply@akemi.store>',
             to: email,
             subject: 'Redefinição de Senha - AkemiSoft',
             html: `<p>Você solicitou uma redefinição de senha. Clique no link para continuar:</p><a href="${resetUrl}">${resetUrl}</a>`
@@ -383,7 +383,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
         res.status(200).json({ message: 'Se um usuário com este e-mail existir, um link de redefinição será enviado.' });
     } catch (error) {
-        console.error('Erro no forgot-password:', error);
+        console.error('Erro detalhado no forgot-password:', JSON.stringify(error, null, 2));
         res.status(500).json({ message: 'Ocorreu um erro no servidor.' });
     }
 });
