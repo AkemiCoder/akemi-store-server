@@ -70,8 +70,8 @@ const createTable = async () => {
       id SERIAL PRIMARY KEY,
       email TEXT UNIQUE NOT NULL,
       password TEXT NOT NULL,
-        avatar_url TEXT,
-      createdAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      avatar_url TEXT,
+      "createdAt" TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
     )
   `;
     await client.query(createTableQuery);
@@ -96,7 +96,8 @@ const createTable = async () => {
       { name: 'password_reset_token', type: 'TEXT' },
       { name: 'password_reset_expires', type: 'TIMESTAMPTZ' },
       { name: 'bio', type: 'TEXT' },
-      { name: 'role', type: 'TEXT NOT NULL DEFAULT \'user\'' }
+      { name: 'role', type: 'TEXT NOT NULL DEFAULT \'user\'' },
+      { name: 'createdAt', type: 'TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP' }
     ];
 
     // 4. Adiciona apenas as colunas que não existem
