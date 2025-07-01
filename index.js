@@ -475,12 +475,18 @@ app.post('/api/auth/resend-verification', authenticateToken, async (req, res) =>
 
 // Rota para autenticar usuários no canal de presença do Pusher
 app.post('/api/pusher/auth', authenticateToken, (req, res) => {
-  // --- DEBUGGING ---
+  // --- PASSO DE DIAGNÓSTICO ---
+  // O objetivo é verificar se este novo código está sendo publicado na Vercel.
+  console.log('DIAGNÓSTICO: A rota /api/pusher/auth foi alcançada com o código mais recente.');
+  res.status(200).send('Resposta de diagnóstico do servidor. O código mais recente foi publicado.');
+  return;
+
+  /*
+  // --- CÓDIGO ORIGINAL TEMPORARIAMENTE DESATIVADO ---
   console.log('--- PUSHER AUTH REQUEST ---');
   console.log('HEADERS:', JSON.stringify(req.headers));
   console.log('BODY:', JSON.stringify(req.body));
-  // --- FIM DEBUGGING ---
-
+  
   const socketId = req.body.socket_id;
   const channel = req.body.channel_name;
 
@@ -489,7 +495,6 @@ app.post('/api/pusher/auth', authenticateToken, (req, res) => {
     return res.status(400).send('Requisição inválida: socket_id e channel_name são obrigatórios.');
   }
   
-  // Informações do usuário que vêm do nosso token JWT
   const user = req.user;
   const userData = {
     id: user.userId.toString(),
@@ -497,7 +502,6 @@ app.post('/api/pusher/auth', authenticateToken, (req, res) => {
       name: user.name,
       email: user.email,
       avatar_url: user.avatar_url,
-      // Garante que is_owner seja booleano, mesmo que não venha no token
       is_owner: !!user.is_owner
     }
   };
@@ -510,6 +514,7 @@ app.post('/api/pusher/auth', authenticateToken, (req, res) => {
     console.error('Pusher auth ERRO na chamada authorizeChannel:', error);
     res.status(500).send('Erro na autorização do Pusher');
   }
+  */
 });
 
 module.exports = app; 
