@@ -175,7 +175,7 @@ app.post('/api/login', async (req, res) => {
     
     // Login bem-sucedido, gerar token JWT
     const token = jwt.sign(
-      { userId: user.id, email: user.email, name: user.name, avatar_url: user.avatar_url },
+      { userId: user.id, email: user.email, name: user.name, avatar_url: user.avatar_url, is_email_verified: user.is_email_verified },
       process.env.JWT_SECRET,
       { expiresIn: '1d' } // Token expira em 1 dia
     );
@@ -209,7 +209,7 @@ const authenticateToken = (req, res, next) => {
 // Rota para buscar dados do usuário
 app.get('/api/user', authenticateToken, async (req, res) => {
   try {
-    const findUserQuery = 'SELECT id, name, email, avatar_url FROM users WHERE id = $1';
+    const findUserQuery = 'SELECT id, name, email, avatar_url, is_email_verified FROM users WHERE id = $1';
     const result = await pool.query(findUserQuery, [req.user.userId]);
 
     if (result.rows.length === 0) {
@@ -252,13 +252,13 @@ app.patch('/api/user/profile', authenticateToken, async (req, res) => {
     }
 
     // Busca os dados atualizados para gerar um novo token
-    const findUserQuery = 'SELECT id, name, email, avatar_url FROM users WHERE id = $1';
+    const findUserQuery = 'SELECT id, name, email, avatar_url, is_email_verified FROM users WHERE id = $1';
     const updatedUserResult = await pool.query(findUserQuery, [userId]);
     const updatedUser = updatedUserResult.rows[0];
 
     // Gera um novo token com os dados atualizados
     const token = jwt.sign(
-      { userId: updatedUser.id, email: updatedUser.email, name: updatedUser.name, avatar_url: updatedUser.avatar_url },
+      { userId: updatedUser.id, email: updatedUser.email, name: updatedUser.name, avatar_url: updatedUser.avatar_url, is_email_verified: updatedUser.is_email_verified },
       process.env.JWT_SECRET,
       { expiresIn: '1d' }
     );
@@ -410,13 +410,13 @@ app.post('/api/user/avatar', authenticateToken, upload.single('avatar'), async (
     await pool.query('UPDATE users SET avatar_url = $1 WHERE id = $2', [blob.url, userId]);
 
     // Busca os dados atualizados para gerar um novo token
-    const findUserQuery = 'SELECT id, name, email, avatar_url FROM users WHERE id = $1';
+    const findUserQuery = 'SELECT id, name, email, avatar_url, is_email_verified FROM users WHERE id = $1';
     const updatedUserResult = await pool.query(findUserQuery, [userId]);
     const updatedUser = updatedUserResult.rows[0];
 
     // Gera um novo token com a URL do avatar
     const token = jwt.sign(
-      { userId: updatedUser.id, email: updatedUser.email, name: updatedUser.name, avatar_url: updatedUser.avatar_url },
+      { userId: updatedUser.id, email: updatedUser.email, name: updatedUser.name, avatar_url: updatedUser.avatar_url, is_email_verified: updatedUser.is_email_verified },
       process.env.JWT_SECRET,
       { expiresIn: '1d' }
     );
@@ -426,6 +426,34 @@ app.post('/api/user/avatar', authenticateToken, upload.single('avatar'), async (
   } catch (error) {
     console.error('Erro ao fazer upload do avatar:', error);
     res.status(500).json({ message: 'Ocorreu um erro no servidor ao processar o avatar.' });
+  }
+});
+
+// Rota para reenviar o e-mail de verificação
+app.post('/api/auth/resend-verification', authenticateToken, async (req, res) => {
+  const { userId } = req.user;
+
+  try {
+    const userResult = await pool.query('SELECT email, is_email_verified FROM users WHERE id = $1', [userId]);
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ message: 'Usuário não encontrado.' });
+    }
+
+    const user = userResult.rows[0];
+    if (user.is_email_verified) {
+      return res.status(400).json({ message: 'Este e-mail já foi verificado.' });
+    }
+
+    // Gera um novo token e envia o e-mail
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    await pool.query('UPDATE users SET email_verification_token = $1 WHERE id = $2', [verificationToken, userId]);
+    
+    await sendVerificationEmail(user.email, verificationToken);
+
+    res.status(200).json({ message: 'E-mail de verificação reenviado com sucesso!' });
+  } catch (error) {
+    console.error('Erro ao reenviar e-mail de verificação:', error);
+    res.status(500).json({ message: 'Ocorreu um erro no servidor.' });
   }
 });
 
