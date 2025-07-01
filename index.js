@@ -8,6 +8,7 @@ const { Resend } = require('resend');
 const multer = require('multer');
 const { put } = require('@vercel/blob');
 const Pusher = require('pusher');
+const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 
 if (!process.env.POSTGRES_URL || process.env.POSTGRES_URL.trim() === '') {
   throw new Error('FATAL: A variável de ambiente POSTGRES_URL está VAZIA ou não foi encontrada no ambiente da Vercel!');
@@ -28,6 +29,8 @@ if (!process.env.PUSHER_APP_ID) throw new Error('FATAL: PUSHER_APP_ID não foi e
 if (!process.env.PUSHER_KEY) throw new Error('FATAL: PUSHER_KEY não foi encontrada!');
 if (!process.env.PUSHER_SECRET) throw new Error('FATAL: PUSHER_SECRET não foi encontrada!');
 if (!process.env.PUSHER_CLUSTER) throw new Error('FATAL: PUSHER_CLUSTER não foi encontrada!');
+if (!process.env.DISCORD_CLIENT_ID) throw new Error('FATAL: DISCORD_CLIENT_ID não foi encontrada!');
+if (!process.env.DISCORD_CLIENT_SECRET) throw new Error('FATAL: DISCORD_CLIENT_SECRET não foi encontrada!');
 
 const app = express();
 const port = 3001;
@@ -92,6 +95,11 @@ const runMigration = async () => {
       await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT \'user\'');
       await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS "createdAt" TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP');
       
+      // Novas colunas para integração com o Discord
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS discord_id TEXT');
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS discord_username TEXT');
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS discord_avatar_url TEXT');
+
       // Garante que a conta principal seja sempre admin
       await client.query(`UPDATE users SET role = 'admin' WHERE email = 'hunteqy@gmail.com'`);
 
@@ -572,6 +580,96 @@ app.patch('/api/users/:id/role', authenticateToken, isAdmin, async (req, res) =>
   } catch (error) {
     console.error(`Erro ao atualizar cargo para o usuário ${id}:`, error);
     res.status(500).json({ message: 'Ocorreu um erro no servidor.' });
+  }
+});
+
+// --- Integração com Discord ---
+
+// 1. Redireciona o usuário para a página de autorização do Discord
+app.get('/api/auth/discord', authenticateToken, (req, res) => {
+  const discordAuthUrl = `https://discord.com/api/oauth2/authorize?client_id=${process.env.DISCORD_CLIENT_ID}&redirect_uri=${encodeURIComponent(process.env.BASE_URL + '/api/auth/discord/callback')}&response_type=code&scope=identify%20email&state=${req.user.userId}`;
+  res.redirect(discordAuthUrl);
+});
+
+// 2. Callback que o Discord chama após a autorização
+app.get('/api/auth/discord/callback', async (req, res) => {
+  const { code, state: userId } = req.query;
+
+  if (!code || !userId) {
+    return res.redirect('/settings?error=discord_auth_failed');
+  }
+
+  try {
+    // Trocar o código por um token de acesso
+    const tokenResponse = await fetch('https://discord.com/api/oauth2/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        client_id: process.env.DISCORD_CLIENT_ID,
+        client_secret: process.env.DISCORD_CLIENT_SECRET,
+        grant_type: 'authorization_code',
+        code: code.toString(),
+        redirect_uri: `${process.env.BASE_URL}/api/auth/discord/callback`,
+      }),
+    });
+
+    const tokenData = await tokenResponse.json();
+    if (!tokenData.access_token) {
+      throw new Error('Falha ao obter token de acesso do Discord.');
+    }
+
+    // Usar o token de acesso para buscar os dados do usuário do Discord
+    const userResponse = await fetch('https://discord.com/api/users/@me', {
+      headers: {
+        Authorization: `Bearer ${tokenData.access_token}`,
+      },
+    });
+
+    const discordUser = await userResponse.json();
+
+    const avatarHash = discordUser.avatar;
+    const discordUserId = discordUser.id;
+    const discordAvatarUrl = avatarHash 
+      ? `https://cdn.discordapp.com/avatars/${discordUserId}/${avatarHash}.png`
+      : `https://cdn.discordapp.com/embed/avatars/${parseInt(discordUser.discriminator) % 5}.png`;
+    
+    // Salvar os dados do Discord no nosso banco de dados
+    const query = `
+      UPDATE users 
+      SET discord_id = $1, discord_username = $2, discord_avatar_url = $3 
+      WHERE id = $4
+    `;
+    await pool.query(query, [discordUser.id, discordUser.username, discordAvatarUrl, userId]);
+
+    // Buscar todos os dados atualizados do usuário para gerar um novo token
+    const findUserQuery = 'SELECT * FROM users WHERE id = $1';
+    const updatedUserResult = await pool.query(findUserQuery, [userId]);
+    const fullUser = updatedUserResult.rows[0];
+
+    // Gerar um novo token com todos os dados, incluindo os do Discord
+    const newTokenPayload = {
+        userId: fullUser.id,
+        email: fullUser.email,
+        name: fullUser.name,
+        avatar_url: fullUser.avatar_url,
+        is_email_verified: fullUser.is_email_verified,
+        role: fullUser.role,
+        bio: fullUser.bio,
+        createdAt: fullUser.createdAt,
+        discord_id: fullUser.discord_id,
+        discord_username: fullUser.discord_username,
+    };
+
+    const newToken = jwt.sign(newTokenPayload, process.env.JWT_SECRET, { expiresIn: '1d' });
+    
+    // Redireciona de volta para a página de configurações com sucesso e o novo token
+    res.redirect(`/settings?success=discord_linked&token=${newToken}`);
+
+  } catch (error) {
+    console.error('Erro na autenticação com Discord:', error);
+    res.redirect('/settings?error=discord_link_failed');
   }
 });
 
