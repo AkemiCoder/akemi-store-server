@@ -4,6 +4,8 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { Resend } = require('resend');
+const multer = require('multer');
+const { put } = require('@vercel/blob');
 
 if (!process.env.POSTGRES_URL || process.env.POSTGRES_URL.trim() === '') {
   throw new Error('FATAL: A variável de ambiente POSTGRES_URL está VAZIA ou não foi encontrada no ambiente da Vercel!');
@@ -16,6 +18,9 @@ if (!process.env.RESEND_API_KEY) {
 }
 if (!process.env.BASE_URL) {
     throw new Error('FATAL: A variável de ambiente BASE_URL não foi encontrada!');
+}
+if (!process.env.BLOB_READ_WRITE_TOKEN) {
+  throw new Error('FATAL: A variável de ambiente BLOB_READ_WRITE_TOKEN não foi encontrada!');
 }
 
 const app = express();
@@ -33,6 +38,10 @@ const pool = new Pool({
   connectionString: `${process.env.POSTGRES_URL}?sslmode=require`,
 });
 
+// Configuração do Multer para upload em memória
+const storage = multer.memoryStorage();
+const upload = multer({ storage });
+
 // Migração e criação da tabela
 const createTable = async () => {
   const client = await pool.connect();
@@ -45,6 +54,7 @@ const createTable = async () => {
         id SERIAL PRIMARY KEY,
         email TEXT UNIQUE NOT NULL,
         password TEXT NOT NULL,
+        avatar_url TEXT,
         createdAt TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
       )
     `;
@@ -63,6 +73,7 @@ const createTable = async () => {
     // 3. Define as colunas que devem existir
     const requiredColumns = [
       { name: 'name', type: 'TEXT' },
+      { name: 'avatar_url', type: 'TEXT' },
       { name: 'is_email_verified', type: 'BOOLEAN DEFAULT FALSE' },
       { name: 'email_verification_token', type: 'TEXT' },
       { name: 'password_reset_token', type: 'TEXT' },
@@ -164,7 +175,7 @@ app.post('/api/login', async (req, res) => {
     
     // Login bem-sucedido, gerar token JWT
     const token = jwt.sign(
-      { userId: user.id, email: user.email, name: user.name },
+      { userId: user.id, email: user.email, name: user.name, avatar_url: user.avatar_url },
       process.env.JWT_SECRET,
       { expiresIn: '1d' } // Token expira em 1 dia
     );
@@ -198,7 +209,7 @@ const authenticateToken = (req, res, next) => {
 // Rota para buscar dados do usuário
 app.get('/api/user', authenticateToken, async (req, res) => {
   try {
-    const findUserQuery = 'SELECT id, name, email FROM users WHERE id = $1';
+    const findUserQuery = 'SELECT id, name, email, avatar_url FROM users WHERE id = $1';
     const result = await pool.query(findUserQuery, [req.user.userId]);
 
     if (result.rows.length === 0) {
@@ -241,13 +252,13 @@ app.patch('/api/user/profile', authenticateToken, async (req, res) => {
     }
 
     // Busca os dados atualizados para gerar um novo token
-    const findUserQuery = 'SELECT id, name, email FROM users WHERE id = $1';
+    const findUserQuery = 'SELECT id, name, email, avatar_url FROM users WHERE id = $1';
     const updatedUserResult = await pool.query(findUserQuery, [userId]);
     const updatedUser = updatedUserResult.rows[0];
 
     // Gera um novo token com os dados atualizados
     const token = jwt.sign(
-      { userId: updatedUser.id, email: updatedUser.email, name: updatedUser.name },
+      { userId: updatedUser.id, email: updatedUser.email, name: updatedUser.name, avatar_url: updatedUser.avatar_url },
       process.env.JWT_SECRET,
       { expiresIn: '1d' }
     );
@@ -378,6 +389,44 @@ app.post('/api/auth/reset-password', async (req, res) => {
         console.error('Erro no reset-password:', error);
         res.status(500).json({ message: 'Ocorreu um erro no servidor.' });
     }
+});
+
+// Rota para fazer upload do avatar
+app.post('/api/user/avatar', authenticateToken, upload.single('avatar'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ message: 'Nenhum arquivo foi enviado.' });
+  }
+
+  const { userId } = req.user;
+  const filename = `avatars/${userId}-${Date.now()}`;
+
+  try {
+    const blob = await put(filename, req.file.buffer, {
+      access: 'public',
+      contentType: req.file.mimetype,
+    });
+
+    // Atualiza a URL do avatar no banco de dados
+    await pool.query('UPDATE users SET avatar_url = $1 WHERE id = $2', [blob.url, userId]);
+
+    // Busca os dados atualizados para gerar um novo token
+    const findUserQuery = 'SELECT id, name, email, avatar_url FROM users WHERE id = $1';
+    const updatedUserResult = await pool.query(findUserQuery, [userId]);
+    const updatedUser = updatedUserResult.rows[0];
+
+    // Gera um novo token com a URL do avatar
+    const token = jwt.sign(
+      { userId: updatedUser.id, email: updatedUser.email, name: updatedUser.name, avatar_url: updatedUser.avatar_url },
+      process.env.JWT_SECRET,
+      { expiresIn: '1d' }
+    );
+
+    res.status(200).json({ message: 'Avatar atualizado com sucesso!', token, avatar_url: blob.url });
+
+  } catch (error) {
+    console.error('Erro ao fazer upload do avatar:', error);
+    res.status(500).json({ message: 'Ocorreu um erro no servidor ao processar o avatar.' });
+  }
 });
 
 module.exports = app; 
