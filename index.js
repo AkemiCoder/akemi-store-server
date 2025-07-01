@@ -42,6 +42,7 @@ const pusher = new Pusher({
 
 // --- Middlewares ---
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // Adicionado para depuração
 console.log('Verificando POSTGRES_URL:', process.env.POSTGRES_URL ? 'Definida' : 'NÃO DEFINIDA');
