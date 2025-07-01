@@ -497,4 +497,12 @@ app.post('/api/pusher/auth', authenticateToken, (req, res) => {
   }
 });
 
+// Rota para expor a configuração pública do Pusher
+app.get('/api/pusher/config', authenticateToken, (req, res) => {
+  res.json({
+    key: process.env.PUSHER_KEY,
+    cluster: process.env.PUSHER_CLUSTER
+  });
+});
+
 module.exports = app; 
