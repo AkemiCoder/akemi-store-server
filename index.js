@@ -159,7 +159,7 @@ app.post('/api/login', async (req, res) => {
   }
 
   try {
-    const findUserQuery = 'SELECT * FROM users WHERE email = $1';
+    const findUserQuery = 'SELECT id, name, email, password, avatar_url, is_email_verified FROM users WHERE email = $1';
     const result = await pool.query(findUserQuery, [email]);
 
     if (result.rows.length === 0) {
