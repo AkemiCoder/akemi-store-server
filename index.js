@@ -475,23 +475,10 @@ app.post('/api/auth/resend-verification', authenticateToken, async (req, res) =>
 
 // Rota para autenticar usuários no canal de presença do Pusher
 app.post('/api/pusher/auth', authenticateToken, (req, res) => {
-  // --- PASSO DE DIAGNÓSTICO ---
-  // O objetivo é verificar se este novo código está sendo publicado na Vercel.
-  console.log('DIAGNÓSTICO: A rota /api/pusher/auth foi alcançada com o código mais recente.');
-  res.status(200).send('Resposta de diagnóstico do servidor. O código mais recente foi publicado.');
-  return;
-
-  /*
-  // --- CÓDIGO ORIGINAL TEMPORARIAMENTE DESATIVADO ---
-  console.log('--- PUSHER AUTH REQUEST ---');
-  console.log('HEADERS:', JSON.stringify(req.headers));
-  console.log('BODY:', JSON.stringify(req.body));
-  
   const socketId = req.body.socket_id;
   const channel = req.body.channel_name;
 
   if (!socketId || !channel) {
-    console.error('Pusher auth FALHOU: socket_id ou channel_name ausentes no corpo da requisição.');
     return res.status(400).send('Requisição inválida: socket_id e channel_name são obrigatórios.');
   }
   
@@ -508,13 +495,11 @@ app.post('/api/pusher/auth', authenticateToken, (req, res) => {
 
   try {
     const authResponse = pusher.authorizeChannel(socketId, channel, userData);
-    console.log(`Pusher auth SUCESSO para usuário: ${user.userId}`);
     res.send(authResponse);
   } catch (error) {
     console.error('Pusher auth ERRO na chamada authorizeChannel:', error);
     res.status(500).send('Erro na autorização do Pusher');
   }
-  */
 });
 
 module.exports = app; 
