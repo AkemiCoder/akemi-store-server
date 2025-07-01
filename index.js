@@ -67,49 +67,32 @@ const runMigration = async () => {
   migrationPromise = new Promise(async (resolve, reject) => {
     const client = await pool.connect();
     try {
-      await client.query('BEGIN'); // Inicia uma transação
+      await client.query('BEGIN');
 
-      const createTableQuery = `
+      // 1. Garante que a tabela exista
+      await client.query(`
         CREATE TABLE IF NOT EXISTS users (
           id SERIAL PRIMARY KEY,
           email TEXT UNIQUE NOT NULL,
-          password TEXT NOT NULL,
-          avatar_url TEXT,
-          "createdAt" TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+          password TEXT NOT NULL
         )
-      `;
-      await client.query(createTableQuery);
+      `);
 
-      const getColumnsQuery = `
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = 'users';
-      `;
-      const res = await client.query(getColumnsQuery);
-      const existingColumns = res.rows.map(row => row.column_name.toLowerCase());
-
-      const requiredColumns = [
-        { name: 'name', type: 'TEXT' },
-        { name: 'avatar_url', type: 'TEXT' },
-        { name: 'is_owner', type: 'BOOLEAN DEFAULT FALSE' },
-        { name: 'is_email_verified', type: 'BOOLEAN DEFAULT FALSE' },
-        { name: 'email_verification_token', type: 'TEXT' },
-        { name: 'password_reset_token', type: 'TEXT' },
-        { name: 'password_reset_expires', type: 'TIMESTAMPTZ' },
-        { name: 'bio', type: 'TEXT' },
-        { name: 'role', type: 'TEXT NOT NULL DEFAULT \'user\'' },
-        { name: 'createdAt', type: 'TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP' }
-      ];
-
-      for (const col of requiredColumns) {
-        if (!existingColumns.includes(col.name.toLowerCase())) {
-          console.log(`Adicionando coluna faltante: ${col.name}`);
-          await client.query(`ALTER TABLE users ADD COLUMN "${col.name}" ${col.type}`);
-        }
-      }
-
+      // 2. Adiciona cada coluna necessária, uma por uma, se ela não existir.
+      // Esta abordagem é muito mais robusta que a anterior.
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS name TEXT');
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT');
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS is_owner BOOLEAN DEFAULT FALSE');
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS is_email_verified BOOLEAN DEFAULT FALSE');
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_token TEXT');
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_token TEXT');
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_expires TIMESTAMPTZ');
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT');
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT \'user\'');
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS "createdAt" TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP');
+      
       await client.query('COMMIT');
-      console.log('Tabela "users" verificada e migrada com sucesso.');
+      console.log('Banco de dados verificado e migrado com sucesso (método robusto).');
       resolve();
     } catch (error) {
       await client.query('ROLLBACK');
