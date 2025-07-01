@@ -94,7 +94,9 @@ const createTable = async () => {
       { name: 'is_email_verified', type: 'BOOLEAN DEFAULT FALSE' },
       { name: 'email_verification_token', type: 'TEXT' },
       { name: 'password_reset_token', type: 'TEXT' },
-      { name: 'password_reset_expires', type: 'TIMESTAMPTZ' }
+      { name: 'password_reset_expires', type: 'TIMESTAMPTZ' },
+      { name: 'bio', type: 'TEXT' },
+      { name: 'role', type: 'TEXT NOT NULL DEFAULT \'user\'' }
     ];
 
     // 4. Adiciona apenas as colunas que não existem
@@ -176,7 +178,7 @@ app.post('/api/login', async (req, res) => {
   }
 
   try {
-    const findUserQuery = 'SELECT id, name, email, password, avatar_url, is_email_verified FROM users WHERE email = $1';
+    const findUserQuery = 'SELECT id, name, email, password, avatar_url, is_email_verified, role, "createdAt" FROM users WHERE email = $1';
     const result = await pool.query(findUserQuery, [email]);
 
     if (result.rows.length === 0) {
@@ -192,7 +194,7 @@ app.post('/api/login', async (req, res) => {
     
     // Login bem-sucedido, gerar token JWT
     const token = jwt.sign(
-      { userId: user.id, email: user.email, name: user.name, avatar_url: user.avatar_url, is_email_verified: user.is_email_verified },
+      { userId: user.id, email: user.email, name: user.name, avatar_url: user.avatar_url, is_email_verified: user.is_email_verified, role: user.role, createdAt: user.createdAt },
       process.env.JWT_SECRET,
       { expiresIn: '1d' } // Token expira em 1 dia
     );
@@ -226,7 +228,7 @@ const authenticateToken = (req, res, next) => {
 // Rota para buscar dados do usuário
 app.get('/api/user', authenticateToken, async (req, res) => {
   try {
-    const findUserQuery = 'SELECT id, name, email, avatar_url, is_email_verified FROM users WHERE id = $1';
+    const findUserQuery = 'SELECT id, name, email, avatar_url, is_email_verified, role, bio, "createdAt" FROM users WHERE id = $1';
     const result = await pool.query(findUserQuery, [req.user.userId]);
 
     if (result.rows.length === 0) {
@@ -242,11 +244,11 @@ app.get('/api/user', authenticateToken, async (req, res) => {
 
 // Rota para atualizar perfil do usuário (nome, email)
 app.patch('/api/user/profile', authenticateToken, async (req, res) => {
-  const { name, email } = req.body;
+  const { name, email, bio } = req.body;
   const { userId } = req.user;
 
-  if (!name && !email) {
-    return res.status(400).json({ message: 'Pelo menos um campo (nome ou email) deve ser fornecido.' });
+  if (!name && !email && !bio) {
+    return res.status(400).json({ message: 'Pelo menos um campo (nome, email ou bio) deve ser fornecido.' });
   }
 
   try {
@@ -267,15 +269,21 @@ app.patch('/api/user/profile', authenticateToken, async (req, res) => {
       const updateNameQuery = 'UPDATE users SET name = $1 WHERE id = $2';
       await pool.query(updateNameQuery, [name, userId]);
     }
+    
+    // Lógica para atualizar bio, se fornecido
+    if (bio || bio === '') { // Permite limpar a bio
+      const updateBioQuery = 'UPDATE users SET bio = $1 WHERE id = $2';
+      await pool.query(updateBioQuery, [bio, userId]);
+    }
 
     // Busca os dados atualizados para gerar um novo token
-    const findUserQuery = 'SELECT id, name, email, avatar_url, is_email_verified FROM users WHERE id = $1';
+    const findUserQuery = 'SELECT id, name, email, avatar_url, is_email_verified, role, "createdAt" FROM users WHERE id = $1';
     const updatedUserResult = await pool.query(findUserQuery, [userId]);
     const updatedUser = updatedUserResult.rows[0];
 
     // Gera um novo token com os dados atualizados
     const token = jwt.sign(
-      { userId: updatedUser.id, email: updatedUser.email, name: updatedUser.name, avatar_url: updatedUser.avatar_url, is_email_verified: updatedUser.is_email_verified },
+      { userId: updatedUser.id, email: updatedUser.email, name: updatedUser.name, avatar_url: updatedUser.avatar_url, is_email_verified: updatedUser.is_email_verified, role: updatedUser.role, createdAt: updatedUser.createdAt },
       process.env.JWT_SECRET,
       { expiresIn: '1d' }
     );
@@ -427,13 +435,13 @@ app.post('/api/user/avatar', authenticateToken, upload.single('avatar'), async (
     await pool.query('UPDATE users SET avatar_url = $1 WHERE id = $2', [blob.url, userId]);
 
     // Busca os dados atualizados para gerar um novo token
-    const findUserQuery = 'SELECT id, name, email, avatar_url, is_email_verified FROM users WHERE id = $1';
+    const findUserQuery = 'SELECT id, name, email, avatar_url, is_email_verified, role, "createdAt" FROM users WHERE id = $1';
     const updatedUserResult = await pool.query(findUserQuery, [userId]);
     const updatedUser = updatedUserResult.rows[0];
 
     // Gera um novo token com a URL do avatar
     const token = jwt.sign(
-      { userId: updatedUser.id, email: updatedUser.email, name: updatedUser.name, avatar_url: updatedUser.avatar_url, is_email_verified: updatedUser.is_email_verified },
+      { userId: updatedUser.id, email: updatedUser.email, name: updatedUser.name, avatar_url: updatedUser.avatar_url, is_email_verified: updatedUser.is_email_verified, role: updatedUser.role, createdAt: updatedUser.createdAt },
       process.env.JWT_SECRET,
       { expiresIn: '1d' }
     );
@@ -490,7 +498,9 @@ app.post('/api/pusher/auth', authenticateToken, (req, res) => {
       name: user.name,
       email: user.email,
       avatar_url: user.avatar_url,
-      is_owner: !!user.is_owner
+      is_owner: !!user.is_owner,
+      role: user.role,
+      createdAt: user.createdAt
     }
   };
 
@@ -500,6 +510,24 @@ app.post('/api/pusher/auth', authenticateToken, (req, res) => {
   } catch (error) {
     console.error('Pusher auth ERRO na chamada authorizeChannel:', error);
     res.status(500).send('Erro na autorização do Pusher');
+  }
+});
+
+// Rota para buscar o perfil público de um usuário
+app.get('/api/user-profile/:id', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const findUserQuery = 'SELECT id, name, avatar_url, role, bio, "createdAt" FROM users WHERE id = $1';
+    const result = await pool.query(findUserQuery, [id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Usuário não encontrado.' });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error(`Erro ao buscar perfil do usuário ${id}:`, error);
+    res.status(500).json({ message: 'Ocorreu um erro no servidor.' });
   }
 });
 
