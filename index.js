@@ -1,4 +1,3 @@
-// Vercel Cache Breaker: final-attempt-3
 const express = require('express');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
