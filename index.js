@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const { Resend } = require('resend');
 const multer = require('multer');
 const { put } = require('@vercel/blob');
+const Pusher = require('pusher');
 
 if (!process.env.POSTGRES_URL || process.env.POSTGRES_URL.trim() === '') {
   throw new Error('FATAL: A variável de ambiente POSTGRES_URL está VAZIA ou não foi encontrada no ambiente da Vercel!');
@@ -22,10 +23,22 @@ if (!process.env.BASE_URL) {
 if (!process.env.BLOB_READ_WRITE_TOKEN) {
   throw new Error('FATAL: A variável de ambiente BLOB_READ_WRITE_TOKEN não foi encontrada!');
 }
+if (!process.env.PUSHER_APP_ID) throw new Error('FATAL: PUSHER_APP_ID não foi encontrada!');
+if (!process.env.PUSHER_KEY) throw new Error('FATAL: PUSHER_KEY não foi encontrada!');
+if (!process.env.PUSHER_SECRET) throw new Error('FATAL: PUSHER_SECRET não foi encontrada!');
+if (!process.env.PUSHER_CLUSTER) throw new Error('FATAL: PUSHER_CLUSTER não foi encontrada!');
 
 const app = express();
 const port = 3001;
 const resend = new Resend(process.env.RESEND_API_KEY);
+
+const pusher = new Pusher({
+  appId: process.env.PUSHER_APP_ID,
+  key: process.env.PUSHER_KEY,
+  secret: process.env.PUSHER_SECRET,
+  cluster: process.env.PUSHER_CLUSTER,
+  useTLS: true
+});
 
 // --- Middlewares ---
 app.use(express.json());
@@ -455,6 +468,32 @@ app.post('/api/auth/resend-verification', authenticateToken, async (req, res) =>
   } catch (error) {
     console.error('Erro ao reenviar e-mail de verificação:', error);
     res.status(500).json({ message: 'Ocorreu um erro no servidor.' });
+  }
+});
+
+// Rota para autenticar usuários no canal de presença do Pusher
+app.post('/api/pusher/auth', authenticateToken, (req, res) => {
+  const socketId = req.body.socket_id;
+  const channel = req.body.channel_name;
+  
+  // Informações do usuário que vêm do nosso token JWT
+  const user = req.user;
+  const userData = {
+    id: user.userId.toString(),
+    user_info: {
+      name: user.name,
+      email: user.email,
+      avatar_url: user.avatar_url,
+      is_owner: user.is_owner
+    }
+  };
+
+  try {
+    const authResponse = pusher.authorizeChannel(socketId, channel, userData);
+    res.send(authResponse);
+  } catch (error) {
+    console.error('Pusher auth error:', error);
+    res.status(500).send('Pusher authentication failed');
   }
 });
 
