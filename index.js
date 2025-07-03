@@ -31,6 +31,8 @@ if (!process.env.PUSHER_SECRET) throw new Error('FATAL: PUSHER_SECRET não foi e
 if (!process.env.PUSHER_CLUSTER) throw new Error('FATAL: PUSHER_CLUSTER não foi encontrada!');
 if (!process.env.DISCORD_CLIENT_ID) throw new Error('FATAL: DISCORD_CLIENT_ID não foi encontrada!');
 if (!process.env.DISCORD_CLIENT_SECRET) throw new Error('FATAL: DISCORD_CLIENT_SECRET não foi encontrada!');
+if (!process.env.SPOTIFY_CLIENT_ID) console.warn('AVISO: SPOTIFY_CLIENT_ID não foi encontrada! A funcionalidade do Spotify não funcionará.');
+if (!process.env.SPOTIFY_CLIENT_SECRET) console.warn('AVISO: SPOTIFY_CLIENT_SECRET não foi encontrada! A funcionalidade do Spotify não funcionará.');
 
 const app = express();
 const port = 3001;
@@ -86,6 +88,7 @@ const runMigration = async () => {
       // Esta abordagem é muito mais robusta que a anterior.
       await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS name TEXT');
       await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT');
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS banner_url TEXT');
       await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS is_owner BOOLEAN DEFAULT FALSE');
       await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS is_email_verified BOOLEAN DEFAULT FALSE');
       await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_token TEXT');
@@ -99,6 +102,27 @@ const runMigration = async () => {
       await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS discord_id TEXT');
       await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS discord_username TEXT');
       await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS discord_avatar_url TEXT');
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_color TEXT');
+
+      // Novas colunas para integração com o Spotify
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS spotify_id TEXT');
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS spotify_username TEXT');
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS spotify_avatar_url TEXT');
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS spotify_access_token TEXT');
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS spotify_refresh_token TEXT');
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS spotify_token_expires TIMESTAMPTZ');
+
+      // Novas colunas para efeitos de perfil
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_effect TEXT');
+
+      // Nova coluna para música de perfil
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS music_url TEXT');
+
+      // Novas colunas para Geolocalização
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS last_ip TEXT');
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS city TEXT');
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS state TEXT');
+      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS country TEXT');
 
       // Garante que a conta principal seja sempre admin
       await client.query(`UPDATE users SET role = 'admin' WHERE email = 'hunteqy@gmail.com'`);
@@ -201,7 +225,36 @@ app.post('/api/login', async (req, res) => {
     if (!isPasswordValid) {
       return res.status(401).json({ message: 'Senha inválida.' });
     }
+
+    if (!user.is_email_verified) {
+      return res.status(403).json({ 
+        message: 'Por favor, verifique seu e-mail antes de fazer login.',
+        userId: user.id 
+      });
+    }
     
+    // Inicia a busca de geolocalização em segundo plano, sem bloquear a resposta de login
+    (async () => {
+      try {
+        const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+        if (ip) {
+          // Usamos um provedor de Geo-IP. ip-api.com é gratuito para uso não comercial.
+          const geoResponse = await fetch(`http://ip-api.com/json/${ip}?fields=status,message,country,regionName,city,query`);
+          const geoData = await geoResponse.json();
+          
+          if (geoData.status === 'success') {
+            await pool.query(
+              'UPDATE users SET last_ip = $1, country = $2, state = $3, city = $4 WHERE id = $5',
+              [geoData.query, geoData.country, geoData.regionName, geoData.city, user.id]
+            );
+          }
+        }
+      } catch (geoError) {
+        // Se a geolocalização falhar, não impede o login. Apenas registramos o erro.
+        console.error('Erro ao buscar ou salvar geolocalização:', geoError);
+      }
+    })();
+
     // Login bem-sucedido, gerar token JWT
     const token = jwt.sign(
       { userId: user.id, email: user.email, name: user.name, avatar_url: user.avatar_url, is_email_verified: user.is_email_verified, role: user.role, createdAt: user.createdAt },
@@ -252,61 +305,91 @@ app.get('/api/user', authenticateToken, async (req, res) => {
   }
 });
 
-// Rota para atualizar perfil do usuário (nome, email)
+// Rota para atualizar o perfil do usuário
 app.patch('/api/user/profile', authenticateToken, async (req, res) => {
-  const { name, email, bio } = req.body;
+  const { name, email, bio, profile_color, profile_effect, music_url } = req.body;
   const { userId } = req.user;
 
-  if (!name && !email && !bio) {
-    return res.status(400).json({ message: 'Pelo menos um campo (nome, email ou bio) deve ser fornecido.' });
+  // Validação básica
+  if (!name || !email) {
+    return res.status(400).json({ message: 'Nome e email são obrigatórios.' });
   }
 
   try {
-    // Lógica para atualizar e-mail, se fornecido
-    if (email) {
-      // Opcional: Adicionar verificação se o novo e-mail já existe
-      const emailExistsQuery = 'SELECT id FROM users WHERE email = $1 AND id != $2';
-      const emailExistsResult = await pool.query(emailExistsQuery, [email, userId]);
-      if (emailExistsResult.rows.length > 0) {
-        return res.status(409).json({ message: 'Este e-mail já está em uso por outra conta.' });
-      }
-      const updateEmailQuery = 'UPDATE users SET email = $1 WHERE id = $2';
-      await pool.query(updateEmailQuery, [email, userId]);
-    }
-
-    // Lógica para atualizar nome, se fornecido
-    if (name) {
-      const updateNameQuery = 'UPDATE users SET name = $1 WHERE id = $2';
-      await pool.query(updateNameQuery, [name, userId]);
-    }
+    const client = await pool.connect();
     
-    // Lógica para atualizar bio, se fornecido
+    // Constrói a query de atualização dinamicamente
+    const fieldsToUpdate = [];
+    const values = [];
+    let queryIndex = 1;
+
+    if (name) {
+      fieldsToUpdate.push(`name = $${queryIndex++}`);
+      values.push(name);
+    }
+    if (email) {
+      // Adicional: verificar se o novo email já não está em uso por outro usuário
+      const emailCheck = await client.query('SELECT id FROM users WHERE email = $1 AND id != $2', [email, userId]);
+      if (emailCheck.rows.length > 0) {
+        return res.status(409).json({ message: 'Este email já está em uso por outra conta.' });
+      }
+      fieldsToUpdate.push(`email = $${queryIndex++}`);
+      values.push(email);
+    }
     if (bio || bio === '') { // Permite limpar a bio
-      const updateBioQuery = 'UPDATE users SET bio = $1 WHERE id = $2';
-      await pool.query(updateBioQuery, [bio, userId]);
+      fieldsToUpdate.push(`bio = $${queryIndex++}`);
+      values.push(bio);
+    }
+    if (profile_color) {
+        fieldsToUpdate.push(`profile_color = $${queryIndex++}`);
+        values.push(profile_color);
+    }
+    if (profile_effect || profile_effect === 'none' || profile_effect === '') {
+        fieldsToUpdate.push(`profile_effect = $${queryIndex++}`);
+        values.push(profile_effect);
+    }
+    if (music_url || music_url === '') { // Permite limpar a URL
+        fieldsToUpdate.push(`music_url = $${queryIndex++}`);
+        values.push(music_url);
     }
 
-    // Busca os dados atualizados para gerar um novo token
-    const findUserQuery = 'SELECT id, name, email, avatar_url, is_email_verified, role, "createdAt" FROM users WHERE id = $1';
-    const updatedUserResult = await pool.query(findUserQuery, [userId]);
-    const updatedUser = updatedUserResult.rows[0];
+    if (fieldsToUpdate.length === 0) {
+      return res.status(400).json({ message: 'Nenhuma informação para atualizar.' });
+    }
 
-    // Gera um novo token com os dados atualizados
-    const token = jwt.sign(
-      { userId: updatedUser.id, email: updatedUser.email, name: updatedUser.name, avatar_url: updatedUser.avatar_url, is_email_verified: updatedUser.is_email_verified, role: updatedUser.role, createdAt: updatedUser.createdAt },
+    values.push(userId);
+    const updateQuery = `UPDATE users SET ${fieldsToUpdate.join(', ')} WHERE id = $${queryIndex} RETURNING *`;
+
+    const result = await client.query(updateQuery, values);
+    client.release();
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Usuário não encontrado para atualização.' });
+    }
+    const updatedUser = result.rows[0];
+
+    // Gerar um novo token com as informações atualizadas
+    const newToken = jwt.sign(
+      { userId: updatedUser.id, email: updatedUser.email, name: updatedUser.name, avatar_url: updatedUser.avatar_url, is_email_verified: updatedUser.is_email_verified, role: updatedUser.role, bio: updatedUser.bio, profile_color: updatedUser.profile_color, profile_effect: updatedUser.profile_effect, music_url: updatedUser.music_url },
       process.env.JWT_SECRET,
       { expiresIn: '1d' }
     );
-
-    res.status(200).json({ message: 'Perfil atualizado com sucesso!', token });
+    
+    res.status(200).json({ 
+      message: 'Perfil atualizado com sucesso!',
+      token: newToken
+    });
 
   } catch (error) {
-    console.error('Erro ao atualizar perfil:', error);
-    res.status(500).json({ message: 'Ocorreu um erro no servidor ao atualizar o perfil.' });
+    console.error('Erro detalhado ao atualizar perfil:', error);
+    if (error.code === '23505' && error.constraint === 'users_email_key') {
+         return res.status(409).json({ message: 'Este email já está em uso por outra conta.' });
+    }
+    res.status(500).json({ message: 'Ocorreu um erro no servidor ao tentar atualizar o perfil.', error: error.message });
   }
 });
 
-// Rota para atualizar a senha
+// Rota para trocar a senha
 app.patch('/api/user/password', authenticateToken, async (req, res) => {
   const { currentPassword, newPassword } = req.body;
   const { userId } = req.user;
@@ -360,6 +443,12 @@ app.post('/api/auth/verify-email', async (req, res) => {
         const userId = userResult.rows[0].id;
         const updateUserQuery = 'UPDATE users SET is_email_verified = TRUE, email_verification_token = NULL WHERE id = $1';
         await pool.query(updateUserQuery, [userId]);
+
+        // Notifica o cliente via Pusher que o e-mail foi verificado
+        pusher.trigger(`user-${userId}`, 'email-verified', {
+            message: 'E-mail verificado com sucesso!',
+            verified: true
+        });
 
         res.status(200).json({ message: 'E-mail verificado com sucesso!' });
     } catch (error) {
@@ -464,6 +553,44 @@ app.post('/api/user/avatar', authenticateToken, upload.single('avatar'), async (
   }
 });
 
+// Rota para fazer upload do banner
+app.post('/api/user/banner', authenticateToken, upload.single('banner'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ message: 'Nenhum arquivo foi enviado.' });
+  }
+
+  const { userId } = req.user;
+  const filename = `banners/${userId}-${Date.now()}`;
+
+  try {
+    const blob = await put(filename, req.file.buffer, {
+      access: 'public',
+      contentType: req.file.mimetype,
+    });
+
+    // Atualiza a URL do banner no banco de dados
+    await pool.query('UPDATE users SET banner_url = $1 WHERE id = $2', [blob.url, userId]);
+
+    // Busca os dados atualizados para gerar um novo token
+    const findUserQuery = 'SELECT id, name, email, avatar_url, banner_url, is_email_verified, role, "createdAt" FROM users WHERE id = $1';
+    const updatedUserResult = await pool.query(findUserQuery, [userId]);
+    const updatedUser = updatedUserResult.rows[0];
+
+    // Gera um novo token com a URL do banner
+    const token = jwt.sign(
+      { userId: updatedUser.id, email: updatedUser.email, name: updatedUser.name, avatar_url: updatedUser.avatar_url, banner_url: updatedUser.banner_url, is_email_verified: updatedUser.is_email_verified, role: updatedUser.role, createdAt: updatedUser.createdAt },
+      process.env.JWT_SECRET,
+      { expiresIn: '1d' }
+    );
+
+    res.status(200).json({ message: 'Banner atualizado com sucesso!', token, banner_url: blob.url });
+
+  } catch (error) {
+    console.error('Erro ao fazer upload do banner:', error);
+    res.status(500).json({ message: 'Ocorreu um erro no servidor ao processar o banner.' });
+  }
+});
+
 // Rota para reenviar o e-mail de verificação
 app.post('/api/auth/resend-verification', authenticateToken, async (req, res) => {
   const { userId } = req.user;
@@ -523,11 +650,11 @@ app.post('/api/pusher/auth', authenticateToken, (req, res) => {
   }
 });
 
-// Rota para buscar o perfil público de um usuário
+// Rota para buscar um perfil de usuário PÚBLICO
 app.get('/api/user-profile/:id', authenticateToken, async (req, res) => {
   const { id } = req.params;
   try {
-    const findUserQuery = 'SELECT id, name, avatar_url, role, bio, "createdAt" FROM users WHERE id = $1';
+    const findUserQuery = 'SELECT id, name, avatar_url, bio, banner_url, profile_color, profile_effect, music_url, discord_username, spotify_username FROM users WHERE id = $1';
     const result = await pool.query(findUserQuery, [id]);
 
     if (result.rows.length === 0) {
@@ -536,7 +663,7 @@ app.get('/api/user-profile/:id', authenticateToken, async (req, res) => {
 
     res.json(result.rows[0]);
   } catch (error) {
-    console.error(`Erro ao buscar perfil do usuário ${id}:`, error);
+    console.error('Erro ao buscar perfil de usuário:', error);
     res.status(500).json({ message: 'Ocorreu um erro no servidor.' });
   }
 });
@@ -550,10 +677,10 @@ const isAdmin = (req, res, next) => {
   }
 };
 
-// Rota para buscar todos os usuários (para a lista da comunidade)
-app.get('/api/users/all', authenticateToken, async (req, res) => {
+// Rota para buscar todos os usuários (para a comunidade)
+app.get('/api/users/all', authenticateToken, isAdmin, async (req, res) => {
   try {
-    const result = await pool.query('SELECT id, name, avatar_url, role FROM users ORDER BY name ASC');
+    const result = await pool.query('SELECT id, name, email, role, last_ip, city, state, country, avatar_url FROM users ORDER BY name ASC');
     res.json(result.rows);
   } catch (error) {
     console.error('Erro ao buscar todos os usuários:', error);
@@ -583,15 +710,82 @@ app.patch('/api/users/:id/role', authenticateToken, isAdmin, async (req, res) =>
   }
 });
 
-// --- Integração com Discord ---
+// Rota para um admin atualizar os dados de um usuário
+app.patch('/api/admin/users/:id', authenticateToken, isAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { email, password } = req.body;
 
-// 1. Redireciona o usuário para a página de autorização do Discord
-app.get('/api/auth/discord', authenticateToken, (req, res) => {
-  const discordAuthUrl = `https://discord.com/api/oauth2/authorize?client_id=${process.env.DISCORD_CLIENT_ID}&redirect_uri=${encodeURIComponent(process.env.BASE_URL + '/api/auth/discord/callback')}&response_type=code&scope=identify%20email&state=${req.user.userId}`;
-  res.redirect(discordAuthUrl);
+  if (!email && !password) {
+    return res.status(400).json({ message: 'Nenhum dado para atualizar (email ou senha).' });
+  }
+
+  try {
+    const fieldsToUpdate = [];
+    const values = [];
+    let queryIndex = 1;
+
+    if (email) {
+      fieldsToUpdate.push(`email = $${queryIndex++}`);
+      values.push(email);
+    }
+
+    if (password) {
+      if (password.length < 8) {
+        return res.status(400).json({ message: 'A nova senha deve ter pelo menos 8 caracteres.' });
+      }
+      const hashedPassword = await bcrypt.hash(password, 10);
+      fieldsToUpdate.push(`password = $${queryIndex++}`);
+      values.push(hashedPassword);
+    }
+
+    values.push(id);
+    const updateQuery = `UPDATE users SET ${fieldsToUpdate.join(', ')} WHERE id = $${queryIndex} RETURNING id, email`;
+
+    const result = await pool.query(updateQuery, values);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Usuário não encontrado.' });
+    }
+
+    res.status(200).json({ message: 'Usuário atualizado com sucesso!', user: result.rows[0] });
+
+  } catch (error) {
+    if (error.code === '23505') { // unique_violation (email)
+      return res.status(409).json({ message: 'Este e-mail já está em uso por outra conta.' });
+    }
+    console.error(`Erro ao atualizar usuário ${id} pelo admin:`, error);
+    res.status(500).json({ message: 'Ocorreu um erro no servidor.' });
+  }
 });
 
-// 2. Callback que o Discord chama após a autorização
+// Rota para um admin DELETAR um usuário
+app.delete('/api/admin/users/:id', authenticateToken, isAdmin, async (req, res) => {
+  const { id } = req.params;
+  const adminUserId = req.user.userId;
+
+  // Prevenção de auto-deleção
+  if (id.toString() === adminUserId.toString()) {
+    return res.status(403).json({ message: 'Você não pode remover sua própria conta de administrador.' });
+  }
+
+  try {
+    const result = await pool.query('DELETE FROM users WHERE id = $1 RETURNING id', [id]);
+    
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: 'Usuário não encontrado.' });
+    }
+
+    res.status(200).json({ message: 'Usuário removido com sucesso!' });
+
+  } catch (error) {
+    console.error(`Erro ao remover usuário ${id} pelo admin:`, error);
+    res.status(500).json({ message: 'Ocorreu um erro no servidor ao tentar remover o usuário.' });
+  }
+});
+
+// --- Integração com Discord ---
+
+// Callback que o Discord chama após a autorização
 app.get('/api/auth/discord/callback', async (req, res) => {
   const { code, state: userId } = req.query;
 
@@ -600,6 +794,9 @@ app.get('/api/auth/discord/callback', async (req, res) => {
   }
 
   try {
+    const redirectUriForToken = `${process.env.BASE_URL}/api/auth/discord/callback`;
+    console.log(`[DEBUG] Enviando para o Discord a redirect_uri: ${redirectUriForToken}`);
+
     // Trocar o código por um token de acesso
     const tokenResponse = await fetch('https://discord.com/api/oauth2/token', {
       method: 'POST',
@@ -611,13 +808,17 @@ app.get('/api/auth/discord/callback', async (req, res) => {
         client_secret: process.env.DISCORD_CLIENT_SECRET,
         grant_type: 'authorization_code',
         code: code.toString(),
-        redirect_uri: `${process.env.BASE_URL}/api/auth/discord/callback`,
+        redirect_uri: redirectUriForToken,
       }),
     });
 
     const tokenData = await tokenResponse.json();
-    if (!tokenData.access_token) {
-      throw new Error('Falha ao obter token de acesso do Discord.');
+
+    // Log detalhado para depuração
+    console.log('Resposta do token do Discord:', tokenData);
+
+    if (!tokenResponse.ok || !tokenData.access_token) {
+      throw new Error('Falha ao obter token de acesso do Discord. Resposta: ' + JSON.stringify(tokenData));
     }
 
     // Usar o token de acesso para buscar os dados do usuário do Discord
@@ -670,6 +871,165 @@ app.get('/api/auth/discord/callback', async (req, res) => {
   } catch (error) {
     console.error('Erro na autenticação com Discord:', error);
     res.redirect('/settings?error=discord_link_failed');
+  }
+});
+
+// Rota para iniciar a autenticação com o Spotify
+app.get('/api/auth/spotify', authenticateToken, (req, res) => {
+  const state = req.user.userId; // Usar o userId para segurança
+  const scope = 'user-read-private user-read-email';
+  
+  if (!process.env.SPOTIFY_CLIENT_ID) {
+    return res.status(500).send('Configuração do Spotify no servidor está incompleta.');
+  }
+
+  res.redirect('https://accounts.spotify.com/authorize?' +
+    new URLSearchParams({
+      response_type: 'code',
+      client_id: process.env.SPOTIFY_CLIENT_ID,
+      scope: scope,
+      redirect_uri: `${process.env.BASE_URL}/api/auth/spotify/callback`,
+      state: state
+    }).toString());
+});
+
+// Rota de callback do Spotify
+app.get('/api/auth/spotify/callback', authenticateToken, async (req, res) => {
+  const { code, state } = req.query;
+  const userId = req.user.userId;
+
+  // Medida de segurança: verificar se o 'state' corresponde ao userId
+  if (state !== userId.toString()) {
+    return res.redirect(`${process.env.BASE_URL}/settings?error=spotify_state_mismatch`);
+  }
+
+  const authOptions = {
+    method: 'POST',
+    url: 'https://accounts.spotify.com/api/token',
+    headers: {
+      'Authorization': 'Basic ' + (Buffer.from(process.env.SPOTIFY_CLIENT_ID + ':' + process.env.SPOTIFY_CLIENT_SECRET).toString('base64')),
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: new URLSearchParams({
+      code: code,
+      redirect_uri: `${process.env.BASE_URL}/api/auth/spotify/callback`,
+      grant_type: 'authorization_code'
+    }).toString()
+  };
+
+  try {
+    // 1. Trocar o código de autorização por um token de acesso
+    const authResponse = await fetch(authOptions.url, { method: authOptions.method, headers: authOptions.headers, body: authOptions.body });
+    const tokenData = await authResponse.json();
+
+    if (tokenData.error) {
+      throw new Error(`Erro do Spotify: ${tokenData.error_description}`);
+    }
+
+    const { access_token, refresh_token, expires_in } = tokenData;
+
+    // 2. Usar o token de acesso para buscar o perfil do usuário no Spotify
+    const userProfileResponse = await fetch('https://api.spotify.com/v1/me', {
+      headers: { 'Authorization': `Bearer ${access_token}` }
+    });
+    const spotifyProfile = await userProfileResponse.json();
+
+    // 3. Salvar as informações no banco de dados
+    const tokenExpires = new Date(Date.now() + expires_in * 1000);
+    const spotifyAvatar = spotifyProfile.images?.[0]?.url;
+
+    const updateQuery = `
+      UPDATE users 
+      SET 
+        spotify_id = $1, 
+        spotify_username = $2,
+        spotify_avatar_url = $3,
+        spotify_access_token = $4, 
+        spotify_refresh_token = $5,
+        spotify_token_expires = $6
+      WHERE id = $7
+    `;
+    await pool.query(updateQuery, [
+      spotifyProfile.id,
+      spotifyProfile.display_name,
+      spotifyAvatar,
+      access_token,
+      refresh_token,
+      tokenExpires,
+      userId
+    ]);
+    
+    // 4. Redirecionar de volta para as configurações com uma mensagem de sucesso
+    res.redirect(`${process.env.BASE_URL}/settings?success=spotify_linked`);
+
+  } catch (error) {
+    console.error('Erro ao vincular conta do Spotify:', error);
+    res.redirect(`${process.env.BASE_URL}/settings?error=spotify_link_failed`);
+  }
+});
+
+// --- Integração com Game Status ---
+app.get('/api/gamestatus', async (req, res) => {
+  try {
+    const gamesToFetch = {
+      minecraft: 'https://api.mcsrvstat.us/3/hypixel.net', // Usando Hypixel como exemplo
+      valorant: 'https://riotstatus.vercel.app/valorant',
+      leagueoflegends: 'https://riotstatus.vercel.app/lol',
+    };
+
+    const promises = Object.entries(gamesToFetch).map(async ([game, url]) => {
+      try {
+        const response = await fetch(url);
+        if (!response.ok) {
+          console.warn(`A API de status para ${game} falhou com status: ${response.status}`);
+          return { game, status: 'unknown' };
+        }
+        const data = await response.json();
+        
+        let status = 'unknown';
+        if (game === 'minecraft') {
+          status = data.online ? 'online' : 'offline';
+        } else if (game === 'valorant' || game === 'leagueoflegends') {
+          // A API da Riot retorna um array de incidentes. Se não houver incidentes, está online.
+          // Isso é uma simplificação. A API real pode ter uma estrutura mais complexa.
+          const hasIncidents = data.incidents && data.incidents.length > 0;
+          const hasMaintenances = data.maintenances && data.maintenances.length > 0;
+          if (hasMaintenances) {
+            status = 'maintenance';
+          } else if (!hasIncidents) {
+            status = 'online';
+          } else {
+            // Poderíamos ser mais específicos sobre o tipo de incidente aqui
+            status = 'offline'; 
+          }
+        }
+        return { game, status };
+      } catch (error) {
+        console.error(`Erro ao buscar status para ${game}:`, error);
+        return { game, status: 'unknown' };
+      }
+    });
+
+    const results = await Promise.all(promises);
+
+    const gameStatus = results.reduce((acc, curr) => {
+      acc[curr.game] = curr.status;
+      return acc;
+    }, {});
+    
+    // Adicionando placeholders para os jogos que ainda não têm API
+    const allGames = ['minecraft', 'leagueoflegends', 'cs2', 'fortnite', 'valorant', 'thefinals', 'gta5'];
+    allGames.forEach(game => {
+      if (!gameStatus[game]) {
+        gameStatus[game] = 'unknown';
+      }
+    });
+
+    res.json(gameStatus);
+
+  } catch (error) {
+    console.error('Erro geral na rota /api/gamestatus:', error);
+    res.status(500).json({ message: 'Erro ao buscar status dos jogos.' });
   }
 });
 
