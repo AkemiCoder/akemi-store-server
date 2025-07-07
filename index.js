@@ -1,4 +1,4 @@
-console.log('[SERVER_INIT] Inicializando o servidor AkemiSoft - Build Limpo');
+console.log('[SERVER_INIT] Inicializando o servidor AkemiSoft - Build Seguro');
 const express = require('express');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
@@ -9,28 +9,29 @@ const multer = require('multer');
 const { put } = require('@vercel/blob');
 const Pusher = require('pusher');
 const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
+const helmet = require('helmet');
+const cors = require('cors');
+const rateLimit = require('express-rate-limit');
+const hpp = require('hpp');
+const mongoSanitize = require('express-mongo-sanitize');
+const xss = require('xss-clean');
+const validator = require('validator');
 
-if (!process.env.POSTGRES_URL || process.env.POSTGRES_URL.trim() === '') {
-  throw new Error('FATAL: A variável de ambiente POSTGRES_URL está VAZIA ou não foi encontrada no ambiente da Vercel!');
-}
-if (!process.env.JWT_SECRET) {
-  throw new Error('FATAL: A variável de ambiente JWT_SECRET não foi encontrada no ambiente da Vercel!');
-}
-if (!process.env.RESEND_API_KEY) {
-  throw new Error('FATAL: A variável de ambiente RESEND_API_KEY não foi encontrada!');
-}
-if (!process.env.BASE_URL) {
-    throw new Error('FATAL: A variável de ambiente BASE_URL não foi encontrada!');
-}
-if (!process.env.BLOB_READ_WRITE_TOKEN) {
-  throw new Error('FATAL: A variável de ambiente BLOB_READ_WRITE_TOKEN não foi encontrada!');
-}
-if (!process.env.PUSHER_APP_ID) throw new Error('FATAL: PUSHER_APP_ID não foi encontrada!');
-if (!process.env.PUSHER_KEY) throw new Error('FATAL: PUSHER_KEY não foi encontrada!');
-if (!process.env.PUSHER_SECRET) throw new Error('FATAL: PUSHER_SECRET não foi encontrada!');
-if (!process.env.PUSHER_CLUSTER) throw new Error('FATAL: PUSHER_CLUSTER não foi encontrada!');
-if (!process.env.DISCORD_CLIENT_ID) throw new Error('FATAL: DISCORD_CLIENT_ID não foi encontrada!');
-if (!process.env.DISCORD_CLIENT_SECRET) throw new Error('FATAL: DISCORD_CLIENT_SECRET não foi encontrada!');
+// Validação de variáveis de ambiente críticas
+const requiredEnvVars = [
+  'POSTGRES_URL', 'JWT_SECRET', 'RESEND_API_KEY', 'BASE_URL', 
+  'BLOB_READ_WRITE_TOKEN', 'PUSHER_APP_ID', 'PUSHER_KEY', 
+  'PUSHER_SECRET', 'PUSHER_CLUSTER', 'DISCORD_CLIENT_ID', 
+  'DISCORD_CLIENT_SECRET'
+];
+
+requiredEnvVars.forEach(envVar => {
+  if (!process.env[envVar] || process.env[envVar].trim() === '') {
+    throw new Error(`FATAL: A variável de ambiente ${envVar} está VAZIA ou não foi encontrada!`);
+  }
+});
+
+// Variáveis opcionais com avisos
 if (!process.env.SPOTIFY_CLIENT_ID) console.warn('AVISO: SPOTIFY_CLIENT_ID não foi encontrada! A funcionalidade do Spotify não funcionará.');
 if (!process.env.SPOTIFY_CLIENT_SECRET) console.warn('AVISO: SPOTIFY_CLIENT_SECRET não foi encontrada! A funcionalidade do Spotify não funcionará.');
 
@@ -46,10 +47,134 @@ const pusher = new Pusher({
   useTLS: true
 });
 
-// --- Middlewares ---
-// Estes devem vir ANTES da definição das rotas
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// === CONFIGURAÇÕES DE SEGURANÇA AVANÇADAS ===
+
+// Helmet com configurações mais restritivas
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com"],
+      imgSrc: ["'self'", "data:", "https:", "blob:"],
+      scriptSrc: ["'self'"],
+      connectSrc: ["'self'", "https://api.spotify.com", "https://discord.com", "https://ip-api.com"],
+      frameSrc: ["'none'"],
+      objectSrc: ["'none'"],
+      upgradeInsecureRequests: []
+    }
+  },
+  crossOriginResourcePolicy: { policy: "same-site" },
+  crossOriginEmbedderPolicy: false,
+  dnsPrefetchControl: { allow: false },
+  frameguard: { action: "deny" },
+  hidePoweredBy: true,
+  hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
+  ieNoOpen: true,
+  noSniff: true,
+  permittedCrossDomainPolicies: { permittedPolicies: "none" },
+  referrerPolicy: { policy: "strict-origin-when-cross-origin" },
+  xssFilter: true
+}));
+
+// CORS restrito com origens específicas
+const allowedOrigins = [
+  'https://seusite.com.br', 
+  'http://localhost:5173',
+  'https://akemi.store',
+  'https://www.akemi.store'
+];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    // Permitir requisições sem origin (como mobile apps)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      console.warn(`Tentativa de acesso de origem não autorizada: ${origin}`);
+      callback(new Error('Não permitido pelo CORS'));
+    }
+  },
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  credentials: true,
+  maxAge: 86400 // 24 horas
+}));
+
+// Rate Limiting específico por rota
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutos
+  max: 5, // 5 tentativas de login/registro
+  message: { message: 'Muitas tentativas de autenticação. Tente novamente em 15 minutos.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true
+});
+
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutos
+  max: 100, // 100 requisições por IP
+  message: { message: 'Muitas requisições deste IP. Tente novamente mais tarde.' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+const uploadLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hora
+  max: 10, // 10 uploads por hora
+  message: { message: 'Limite de uploads excedido. Tente novamente em 1 hora.' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+// Proteções contra ataques
+app.use(hpp()); // Proteção contra HTTP Parameter Pollution
+app.use(mongoSanitize()); // Sanitização contra NoSQL Injection
+app.use(xss()); // Proteção contra XSS
+
+// Middlewares de parsing com limites
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Middleware para remover headers sensíveis
+app.use((req, res, next) => {
+  res.removeHeader('X-Powered-By');
+  next();
+});
+
+// Middleware de logging de segurança
+app.use((req, res, next) => {
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  const userAgent = req.headers['user-agent'];
+  const timestamp = new Date().toISOString();
+  
+  console.log(`[SECURITY_LOG] ${timestamp} - IP: ${ip} - Method: ${req.method} - Path: ${req.path} - User-Agent: ${userAgent}`);
+  
+  // Log de tentativas suspeitas
+  if (req.path.includes('admin') || req.path.includes('login') || req.path.includes('register')) {
+    console.log(`[AUTH_ATTEMPT] ${timestamp} - IP: ${ip} - Path: ${req.path}`);
+  }
+  
+  next();
+});
+
+// Validação de entrada melhorada
+const validateEmail = (email) => {
+  return validator.isEmail(email) && email.length <= 254;
+};
+
+const validatePassword = (password) => {
+  // Senha deve ter pelo menos 8 caracteres, incluindo maiúscula, minúscula, número e caractere especial
+  const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/;
+  return passwordRegex.test(password);
+};
+
+const sanitizeInput = (input) => {
+  if (typeof input !== 'string') return input;
+  return validator.escape(input.trim());
+};
 
 // Adicionado para depuração
 console.log('Verificando POSTGRES_URL:', process.env.POSTGRES_URL ? 'Definida' : 'NÃO DEFINIDA');
@@ -155,6 +280,30 @@ const ensureDbIsReady = async (req, res, next) => {
 // Aplica o middleware a todas as rotas
 app.use(ensureDbIsReady);
 
+// Aplicar rate limiting global
+app.use(apiLimiter);
+
+// Middleware de tratamento de erros global
+app.use((err, req, res, next) => {
+  console.error('Erro não tratado:', err);
+  
+  // Não expor detalhes internos em produção
+  if (process.env.NODE_ENV === 'production') {
+    res.status(500).json({ message: 'Erro interno do servidor.' });
+  } else {
+    res.status(500).json({ 
+      message: 'Erro interno do servidor.', 
+      error: err.message,
+      stack: err.stack 
+    });
+  }
+});
+
+// Middleware para rotas não encontradas
+app.use('*', (req, res) => {
+  res.status(404).json({ message: 'Rota não encontrada.' });
+});
+
 // Função para enviar e-mail de verificação
 const sendVerificationEmail = async (email, token) => {
     const verificationUrl = `${process.env.BASE_URL}/verify-email?token=${token}`;
@@ -171,61 +320,98 @@ const sendVerificationEmail = async (email, token) => {
     }
 };
 
-// Registration endpoint
-app.post('/api/register', async (req, res) => {
+// Registration endpoint com validação melhorada
+app.post('/api/register', authLimiter, async (req, res) => {
   const { name, email, password } = req.body;
 
+  // Validação rigorosa dos dados de entrada
   if (!name || !email || !password) {
     return res.status(400).json({ message: 'Nome, email e senha são obrigatórios.' });
   }
 
-  if (password.length < 8) {
-    return res.status(400).json({ message: 'A senha deve ter pelo menos 8 caracteres.' });
+  // Sanitização dos dados
+  const sanitizedName = sanitizeInput(name);
+  const sanitizedEmail = sanitizeInput(email);
+
+  // Validação de email
+  if (!validateEmail(sanitizedEmail)) {
+    return res.status(400).json({ message: 'Formato de email inválido.' });
+  }
+
+  // Validação de nome
+  if (sanitizedName.length < 2 || sanitizedName.length > 50) {
+    return res.status(400).json({ message: 'Nome deve ter entre 2 e 50 caracteres.' });
+  }
+
+  // Validação de senha mais rigorosa
+  if (!validatePassword(password)) {
+    return res.status(400).json({ 
+      message: 'A senha deve ter pelo menos 8 caracteres, incluindo maiúscula, minúscula, número e caractere especial (@$!%*?&).' 
+    });
   }
 
   try {
-    const hashedPassword = await bcrypt.hash(password, 10);
+    // Verificar se o email já existe antes de tentar inserir
+    const existingUser = await pool.query('SELECT id FROM users WHERE email = $1', [sanitizedEmail]);
+    if (existingUser.rows.length > 0) {
+      return res.status(409).json({ message: 'Este e-mail já está em uso.' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 12); // Aumentado para 12 rounds
     const verificationToken = crypto.randomBytes(32).toString('hex');
     
     const insertQuery = 'INSERT INTO users (name, email, password, email_verification_token) VALUES ($1, $2, $3, $4) RETURNING id';
-    const result = await pool.query(insertQuery, [name, email, hashedPassword, verificationToken]); 
+    const result = await pool.query(insertQuery, [sanitizedName, sanitizedEmail, hashedPassword, verificationToken]); 
     
-    await sendVerificationEmail(email, verificationToken);
+    await sendVerificationEmail(sanitizedEmail, verificationToken);
+
+    // Log de registro bem-sucedido
+    console.log(`[REGISTER_SUCCESS] Novo usuário registrado: ${sanitizedEmail}`);
 
     res.status(201).json({ message: 'Usuário registrado com sucesso! Por favor, verifique seu e-mail.'});
 
   } catch (error) {
-    if (error.code === '23505') { // Unique violation
-      return res.status(409).json({ message: 'Este e-mail já está em uso.' });
-    }
     console.error('Erro detalhado ao registrar usuário:', error);
-    res.status(500).json({ message: 'Ocorreu um erro no servidor ao tentar registrar.', error: error.message });
+    res.status(500).json({ message: 'Ocorreu um erro no servidor ao tentar registrar.' });
   }
 });
 
-// Login endpoint
-app.post('/api/login', async (req, res) => {
+// Login endpoint com proteções de segurança
+app.post('/api/login', authLimiter, async (req, res) => {
   const { email, password } = req.body;
 
   if (!email || !password) {
     return res.status(400).json({ message: 'Email e senha são obrigatórios.' });
   }
 
+  // Sanitização do email
+  const sanitizedEmail = sanitizeInput(email);
+
+  // Validação de email
+  if (!validateEmail(sanitizedEmail)) {
+    return res.status(400).json({ message: 'Formato de email inválido.' });
+  }
+
   try {
     const findUserQuery = 'SELECT id, name, email, password, avatar_url, is_email_verified, role, "createdAt" FROM users WHERE email = $1';
-    const result = await pool.query(findUserQuery, [email]);
+    const result = await pool.query(findUserQuery, [sanitizedEmail]);
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ message: 'Usuário não encontrado.' });
+      // Não revelar se o usuário existe ou não (timing attack protection)
+      await bcrypt.hash(password, 10); // Simular tempo de processamento
+      return res.status(401).json({ message: 'Credenciais inválidas.' });
     }
 
     const user = result.rows[0];
     const isPasswordValid = await bcrypt.compare(password, user.password);
 
     if (!isPasswordValid) {
-      return res.status(401).json({ message: 'Senha inválida.' });
+      // Log de tentativa de login falhada
+      const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+      console.log(`[LOGIN_FAILED] Tentativa de login falhada para ${sanitizedEmail} - IP: ${ip}`);
+      return res.status(401).json({ message: 'Credenciais inválidas.' });
     }
-
+    
     if (!user.is_email_verified) {
       return res.status(403).json({ 
         message: 'Por favor, verifique seu e-mail antes de fazer login.',
@@ -239,7 +425,7 @@ app.post('/api/login', async (req, res) => {
         const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
         if (ip) {
           // Usamos um provedor de Geo-IP. ip-api.com é gratuito para uso não comercial.
-          const geoResponse = await fetch(`http://ip-api.com/json/${ip}?fields=status,message,country,regionName,city,query`);
+          const geoResponse = await fetch(`https://ip-api.com/json/${ip}?fields=status,message,country,regionName,city,query`);
           const geoData = await geoResponse.json();
           
           if (geoData.status === 'success') {
@@ -255,34 +441,74 @@ app.post('/api/login', async (req, res) => {
       }
     })();
 
-    // Login bem-sucedido, gerar token JWT
+    // Login bem-sucedido, gerar token JWT com claims mais seguros
     const token = jwt.sign(
-      { userId: user.id, email: user.email, name: user.name, avatar_url: user.avatar_url, is_email_verified: user.is_email_verified, role: user.role, createdAt: user.createdAt },
+      { 
+        userId: user.id, 
+        email: user.email, 
+        name: user.name, 
+        avatar_url: user.avatar_url, 
+        is_email_verified: user.is_email_verified, 
+        role: user.role, 
+        createdAt: user.createdAt,
+        iat: Math.floor(Date.now() / 1000),
+        iss: 'akemi-soft',
+        aud: 'akemi-users'
+      },
       process.env.JWT_SECRET,
-      { expiresIn: '1d' } // Token expira em 1 dia
+      { 
+        expiresIn: '1d',
+        algorithm: 'HS256'
+      }
     );
+
+    // Log de login bem-sucedido
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    console.log(`[LOGIN_SUCCESS] Login bem-sucedido para ${sanitizedEmail} - IP: ${ip}`);
 
     res.status(200).json({ message: 'Login bem-sucedido!', token });
 
   } catch (error) {
     console.error('Erro detalhado ao fazer login:', error);
-    res.status(500).json({ message: 'Ocorreu um erro no servidor ao tentar fazer login.', error: error.message });
+    res.status(500).json({ message: 'Ocorreu um erro no servidor ao tentar fazer login.' });
   }
 });
 
-// Middleware para verificar token
+// Middleware para verificar token com validação melhorada
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1]; // Formato "Bearer TOKEN"
 
-  if (token == null) {
-    return res.sendStatus(401); // Não autorizado se não houver token
+  if (!token) {
+    return res.status(401).json({ message: 'Token de acesso é obrigatório.' });
   }
 
-  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+  // Verificar formato do token
+  if (!/^[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]*$/.test(token)) {
+    return res.status(401).json({ message: 'Formato de token inválido.' });
+  }
+
+  jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] }, (err, user) => {
     if (err) {
-      return res.sendStatus(403); // Proibido se o token for inválido
+      if (err.name === 'TokenExpiredError') {
+        return res.status(401).json({ message: 'Token expirado. Faça login novamente.' });
+      } else if (err.name === 'JsonWebTokenError') {
+        return res.status(401).json({ message: 'Token inválido.' });
+      }
+      return res.status(403).json({ message: 'Token malformado.' });
     }
+
+    // Validação adicional dos claims
+    if (!user.userId || !user.email || !user.role) {
+      return res.status(403).json({ message: 'Token com claims inválidos.' });
+    }
+
+    // Verificar se o token não é muito antigo (opcional)
+    const tokenAge = Math.floor(Date.now() / 1000) - (user.iat || 0);
+    if (tokenAge > 86400) { // 24 horas
+      return res.status(401).json({ message: 'Token muito antigo. Faça login novamente.' });
+    }
+
     req.user = user;
     next();
   });
@@ -515,14 +741,26 @@ app.post('/api/auth/reset-password', async (req, res) => {
     }
 });
 
-// Rota para fazer upload do avatar
-app.post('/api/user/avatar', authenticateToken, upload.single('avatar'), async (req, res) => {
+// Rota para fazer upload do avatar com validação de segurança
+app.post('/api/user/avatar', uploadLimiter, authenticateToken, upload.single('avatar'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ message: 'Nenhum arquivo foi enviado.' });
   }
 
+  // Validação de tipo de arquivo
+  const allowedMimeTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+  if (!allowedMimeTypes.includes(req.file.mimetype)) {
+    return res.status(400).json({ message: 'Tipo de arquivo não suportado. Use apenas JPEG, PNG ou WebP.' });
+  }
+
+  // Validação de tamanho (máximo 5MB)
+  const maxSize = 5 * 1024 * 1024; // 5MB
+  if (req.file.size > maxSize) {
+    return res.status(400).json({ message: 'Arquivo muito grande. Tamanho máximo: 5MB.' });
+  }
+
   const { userId } = req.user;
-  const filename = `avatars/${userId}-${Date.now()}`;
+  const filename = `avatars/${userId}-${Date.now()}-${crypto.randomBytes(8).toString('hex')}`;
 
   try {
     const blob = await put(filename, req.file.buffer, {
@@ -540,9 +778,23 @@ app.post('/api/user/avatar', authenticateToken, upload.single('avatar'), async (
 
     // Gera um novo token com a URL do avatar
     const token = jwt.sign(
-      { userId: updatedUser.id, email: updatedUser.email, name: updatedUser.name, avatar_url: updatedUser.avatar_url, is_email_verified: updatedUser.is_email_verified, role: updatedUser.role, createdAt: updatedUser.createdAt },
+      { 
+        userId: updatedUser.id, 
+        email: updatedUser.email, 
+        name: updatedUser.name, 
+        avatar_url: updatedUser.avatar_url, 
+        is_email_verified: updatedUser.is_email_verified, 
+        role: updatedUser.role, 
+        createdAt: updatedUser.createdAt,
+        iat: Math.floor(Date.now() / 1000),
+        iss: 'akemi-soft',
+        aud: 'akemi-users'
+      },
       process.env.JWT_SECRET,
-      { expiresIn: '1d' }
+      { 
+        expiresIn: '1d',
+        algorithm: 'HS256'
+      }
     );
 
     res.status(200).json({ message: 'Avatar atualizado com sucesso!', token, avatar_url: blob.url });
