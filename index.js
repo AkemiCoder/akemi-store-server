@@ -283,25 +283,39 @@ app.use(ensureDbIsReady);
 // Aplicar rate limiting global
 app.use(apiLimiter);
 
-// Middleware de tratamento de erros global
+// Middleware para rotas não encontradas (sempre JSON)
+app.use('*', (req, res) => {
+  res.status(404).json({ message: 'Rota não encontrada.' });
+});
+
+// Middleware de tratamento de erros global (sempre JSON)
 app.use((err, req, res, next) => {
+  // Se a resposta já foi enviada, delega para o handler padrão do Express
+  if (res.headersSent) {
+    return next(err);
+  }
+
+  // Se o erro for de CORS
+  if (err && err.message && err.message.includes('CORS')) {
+    return res.status(403).json({ message: 'Erro de CORS: origem não permitida.' });
+  }
+
+  // Se o erro for do rate limiter
+  if (err && err.status === 429) {
+    return res.status(429).json({ message: err.message || 'Muitas requisições, tente novamente mais tarde.' });
+  }
+
+  // Outros erros
   console.error('Erro não tratado:', err);
-  
-  // Não expor detalhes internos em produção
   if (process.env.NODE_ENV === 'production') {
     res.status(500).json({ message: 'Erro interno do servidor.' });
   } else {
-    res.status(500).json({ 
-      message: 'Erro interno do servidor.', 
+    res.status(500).json({
+      message: 'Erro interno do servidor.',
       error: err.message,
-      stack: err.stack 
+      stack: err.stack
     });
   }
-});
-
-// Middleware para rotas não encontradas
-app.use('*', (req, res) => {
-  res.status(404).json({ message: 'Rota não encontrada.' });
 });
 
 // Função para enviar e-mail de verificação
